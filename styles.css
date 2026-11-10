@@ -875,6 +875,200 @@ textarea.input:focus {
 
 .form-error.show { display: block; }
 
+/* ---------- finance table ---------- */
+
+.fin-wrap {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.fin-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  min-width: 1040px;
+  font-size: 13.5px;
+}
+
+.fin-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.fin-table th.num { text-align: right; }
+
+.fin-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+
+.fin-table tbody tr:last-child td { border-bottom: 0; }
+
+.fin-table tfoot td {
+  background: var(--surface-2);
+  font-weight: 700;
+  padding: 10px 8px;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.fin-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.fin-auto {
+  color: var(--muted-2);
+  white-space: nowrap;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fin-td { padding: 3px 4px; }
+
+.fin-ops { width: 44px; text-align: center; }
+.fin-ops .icon-btn { margin: 0 auto; }
+
+.fin-total-label { color: var(--muted); font-size: 12px; }
+
+/* «Пропуск» — визуальный разрыв между верхним блоком и остальными полями */
+.fin-sep {
+  width: 20px;
+  min-width: 20px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: repeating-linear-gradient(to bottom, var(--border) 0 5px, transparent 5px 11px) center / 1px 100% no-repeat;
+}
+
+.fin-input {
+  width: 100%;
+  min-width: 96px;
+  max-width: 190px;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color .15s, background .15s, box-shadow .15s;
+}
+
+.fin-input:hover { border-color: var(--border); }
+
+.fin-input:focus {
+  border-color: var(--accent);
+  background: var(--surface-2);
+  box-shadow: 0 0 0 3px rgba(124, 108, 255, .15);
+}
+
+.fin-input.is-auto { color: var(--muted); }
+
+.fin-table td.num .fin-input { text-align: right; }
+.fin-input[list] { min-width: 130px; }
+
+/* Финансовый блок в форме смены */
+.fin-block {
+  border-top: 1px solid var(--border-soft);
+  margin: 4px 0 12px;
+  padding-top: 10px;
+}
+
+.fin-block summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 4px 0;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.fin-block summary::-webkit-details-marker { display: none; }
+.fin-block summary::before { content: '▸'; color: var(--muted); flex: none; }
+.fin-block[open] summary::before { content: '▾'; }
+
+.fin-block-body { padding-top: 12px; }
+
+.fin-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+
+.fin-field { margin-bottom: 12px; }
+
+.fin-split {
+  height: 1px;
+  margin: 2px 0 14px;
+  background: repeating-linear-gradient(to right, var(--border) 0 6px, transparent 6px 12px);
+}
+
+.input.is-auto { color: var(--muted); }
+
+/* Настройка колонок */
+.fin-cols { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+
+.fin-col-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+
+.fin-col-move { display: flex; flex-direction: column; gap: 2px; flex: none; }
+
+.fin-col-move .icon-btn {
+  width: 24px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.fin-col-title { flex: 1; min-width: 0; height: 38px; }
+
+.fin-col-type {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.fin-type { width: auto; flex: none; height: 38px; }
+.fin-col-show { display: flex; align-items: center; gap: 4px; flex: none; }
+.fin-col-add { display: flex; flex-wrap: wrap; gap: 6px; }
+.fin-col-add .input { flex: 1; min-width: 130px; height: 38px; }
+
+@media (max-width: 700px) {
+  .fin-table { min-width: 900px; }
+  .fin-input { min-width: 82px; }
+  .fin-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 380px) {
+  .fin-grid { grid-template-columns: 1fr; }
+}
+
 /* ---------- shift list ---------- */
 
 .coverage {

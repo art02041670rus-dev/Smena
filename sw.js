@@ -1,5 +1,5 @@
 /* Service worker: офлайн-режим и установка на телефон */
-const CACHE = 'smena-shell-v6';
+const CACHE = 'smena-shell-v7';
 const ASSETS = [
   './',
   './index.html',

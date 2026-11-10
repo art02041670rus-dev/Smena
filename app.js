@@ -27,6 +27,26 @@ const DAY_END = 21 * 60;
 const DEFAULT_START = '10:00';
 const DEFAULT_END = '21:00';
 
+/* Финансовый учёт: колонки таблицы.
+   group 'head' — верхний блок (точка / сотрудник / дата),
+   group 'body' — остальные поля, отделены визуальным «пропуском». */
+const FIN_HEAD = 'head';
+const FIN_BODY = 'body';
+const FIN_DEFAULT_COLUMNS = [
+  { id: 'point', title: 'Точка', type: 'text', group: FIN_HEAD },
+  { id: 'emp', title: 'ФИО сотрудника', type: 'auto', auto: 'emp', group: FIN_HEAD },
+  { id: 'date', title: 'Дата', type: 'auto', auto: 'date', group: FIN_HEAD },
+  { id: 'start', title: 'Начало смены', type: 'auto', auto: 'start', group: FIN_BODY },
+  { id: 'lunch', title: 'Обед', type: 'money', group: FIN_BODY },
+  { id: 'revenue', title: 'Выручка', type: 'money', group: FIN_BODY },
+  { id: 'cash', title: 'Наличный расчёт', type: 'money', group: FIN_BODY },
+  { id: 'noncash', title: 'Безналичный расчёт', type: 'money', calc: 'revenue-cash', group: FIN_BODY },
+  { id: 'collection', title: 'Инкассация', type: 'money', group: FIN_BODY },
+  { id: 'remainder', title: 'Остаток в кассе', type: 'money', calc: 'cash-collection', group: FIN_BODY },
+  { id: 'change', title: 'Размен', type: 'money', group: FIN_BODY },
+];
+const FIN_TYPE_LABEL = { text: 'Текст', money: 'Сумма', time: 'Время', auto: 'Из смены' };
+
 const IC = {
   edit: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   trash: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>',
@@ -58,6 +78,12 @@ let fb = null;
 let toastTimer = 0;
 let connectTimer = 0;
 let everConnected = false;
+
+/* Несохранённые правки таблицы учёта: shiftId -> { colId: value }.
+   Нужны, чтобы ответ сервера не затирал то, что человек печатает прямо сейчас. */
+const finDrafts = new Map();
+const finWriteTimers = {};
+let pendingRender = false;
 
 /* ---------- utils ---------- */
 
@@ -207,6 +233,7 @@ function normalizeTeam(raw) {
     employees: {},
     shifts: {},
     log: {},
+    finance: normalizeFinance(raw.finance),
     createdAt: Number(raw.createdAt) || Date.now(),
   };
   if (raw.employees && typeof raw.employees === 'object') {
@@ -225,7 +252,7 @@ function normalizeTeam(raw) {
       const s = raw.shifts[id];
       if (!s || typeof s !== 'object') return;
       if (!validYmd(s.date) || !s.empId || isNaN(t2m(s.start)) || isNaN(t2m(s.end))) return;
-      team.shifts[id] = {
+      const shift = {
         id: s.id || id,
         date: s.date,
         empId: String(s.empId),
@@ -235,6 +262,17 @@ function normalizeTeam(raw) {
         by: s.by ? String(s.by).slice(0, 40) : '',
         at: Number(s.at) || 0,
       };
+      if (s.fin && typeof s.fin === 'object' && s.fin.values && typeof s.fin.values === 'object') {
+        const values = {};
+        Object.keys(s.fin.values).slice(0, 80).forEach((key) => {
+          const v = s.fin.values[key];
+          if (v == null || typeof v === 'object') return;
+          const str = String(v).trim().slice(0, 200);
+          if (str) values[key] = str;
+        });
+        if (Object.keys(values).length) shift.fin = { values };
+      }
+      team.shifts[id] = shift;
     });
   }
   if (raw.log && typeof raw.log === 'object') {
@@ -253,6 +291,69 @@ function normalizeTeam(raw) {
   return team;
 }
 
+function normalizeFinance(raw) {
+  const defs = finDefaultColumns();
+  const defById = {};
+  defs.forEach((d) => { defById[d.id] = d; });
+
+  const out = [];
+  const seen = {};
+  const source = raw && Array.isArray(raw.columns) && raw.columns.length ? raw.columns : defs;
+  source.forEach((c) => {
+    if (!c || typeof c !== 'object') return;
+    const id = String(c.id || '').trim().slice(0, 40);
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    const def = defById[id];
+    if (def) {
+      out.push({
+        id,
+        title: String(c.title || def.title).slice(0, 60),
+        type: def.type,
+        auto: def.auto || null,
+        calc: def.calc || null,
+        group: def.group,
+        hidden: !!c.hidden,
+        core: true,
+      });
+      return;
+    }
+    const type = ['text', 'money', 'time'].indexOf(c.type) >= 0 ? c.type : 'text';
+    out.push({
+      id,
+      title: String(c.title || 'Колонка').slice(0, 60),
+      type,
+      auto: null,
+      calc: null,
+      group: FIN_BODY,
+      hidden: !!c.hidden,
+      core: false,
+    });
+  });
+
+  /* Колонки «из смены» — опора таблицы: если их нет в сохранённых данных, возвращаем. */
+  ['point', 'emp', 'date', 'start'].forEach((id) => {
+    if (seen[id]) return;
+    const def = defById[id];
+    if (!def) return;
+    out.push({
+      id: def.id,
+      title: def.title,
+      type: def.type,
+      auto: def.auto || null,
+      calc: def.calc || null,
+      group: def.group,
+      hidden: false,
+      core: true,
+    });
+  });
+
+  return {
+    title: String((raw && raw.title) || 'Финансовый учёт').slice(0, 60),
+    columns: out,
+  };
+}
+
 function persist() {
   if (state.team) LS.set(teamKey(), state.team);
 }
@@ -263,6 +364,7 @@ function seedTeam() {
     employees: {},
     shifts: {},
     log: {},
+    finance: normalizeFinance(null),
     createdAt: Date.now(),
   };
   ['Анна', 'Пётр', 'Мария', 'Игорь'].forEach((name, i) => {
@@ -364,6 +466,186 @@ function statsForMonth() {
   return Object.values(map).sort((a, b) => b.mins - a.mins || a.emp.name.localeCompare(b.emp.name, 'ru'));
 }
 
+/* ---------- finance (таблица учёта) ---------- */
+
+function finHas(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj || {}, key);
+}
+
+function finDefaultColumns() {
+  return FIN_DEFAULT_COLUMNS.map((c) => Object.assign({ core: true, hidden: false }, c));
+}
+
+function finColumnById(id) {
+  const cols = (state.team && state.team.finance && state.team.finance.columns) || [];
+  return cols.find((c) => c.id === id) || null;
+}
+
+function finVisibleColumns() {
+  const cols = (state.team && state.team.finance && state.team.finance.columns) || [];
+  return cols.filter((c) => !c.hidden);
+}
+
+function finValues(shift) {
+  return (shift && shift.fin && shift.fin.values) || {};
+}
+
+function parseMoney(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replace(/\u00a0/g, '').replace(/\s+/g, '').replace(',', '.');
+  if (!s) return null;
+  const cleaned = s.replace(/[^\d.-]/g, '');
+  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.' || cleaned === '.-') return null;
+  const n = Number(cleaned);
+  return isFinite(n) ? n : null;
+}
+
+function fmtMoney(v) {
+  const n = typeof v === 'number' ? v : parseMoney(v);
+  if (n == null || isNaN(n)) return '';
+  return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+}
+
+function finCalcFromValues(vals, col) {
+  const v = vals || {};
+  if (!col || !col.calc) return '';
+  if (col.calc === 'revenue-cash') {
+    const rev = parseMoney(v.revenue);
+    const cash = parseMoney(v.cash);
+    if (rev == null && cash == null) return '';
+    return String((rev || 0) - (cash || 0));
+  }
+  if (col.calc === 'cash-collection') {
+    const cash = parseMoney(v.cash);
+    const coll = parseMoney(v.collection);
+    if (cash == null && coll == null) return '';
+    return String((cash || 0) - (coll || 0));
+  }
+  return '';
+}
+
+function finAutoValue(shift, col) {
+  if (!shift || !col || !col.auto) return '';
+  if (col.auto === 'emp') {
+    const emp = empById(shift.empId);
+    return emp ? emp.name : 'Удалён';
+  }
+  if (col.auto === 'date') return fmtDayShort(shift.date);
+  if (col.auto === 'start') return shift.start + '–' + shift.end;
+  return '';
+}
+
+function finValue(shift, col) {
+  if (!shift || !col) return '';
+  if (col.auto) return finAutoValue(shift, col);
+  const vals = finValues(shift);
+  if (finHas(vals, col.id) && String(vals[col.id]).trim() !== '') return String(vals[col.id]);
+  if (col.calc) return finCalcFromValues(vals, col);
+  return '';
+}
+
+function setFinValue(shift, colId, raw) {
+  const val = String(raw == null ? '' : raw).trim();
+  if (!shift.fin || typeof shift.fin !== 'object') shift.fin = { values: {} };
+  if (!shift.fin.values || typeof shift.fin.values !== 'object') shift.fin.values = {};
+  if (val) shift.fin.values[colId] = val.slice(0, 200);
+  else delete shift.fin.values[colId];
+  if (!Object.keys(shift.fin.values).length) delete shift.fin;
+}
+
+function setFinDraft(shiftId, colId, value) {
+  let draft = finDrafts.get(shiftId);
+  if (!draft) { draft = {}; finDrafts.set(shiftId, draft); }
+  draft[colId] = String(value == null ? '' : value).trim();
+}
+
+function applyFinDrafts(team) {
+  if (!team || !team.shifts || !finDrafts.size) return team;
+  finDrafts.forEach((draft, id) => {
+    const shift = team.shifts[id];
+    if (!shift) return;
+    const values = Object.assign({}, finValues(shift));
+    Object.keys(draft).forEach((colId) => {
+      if (draft[colId]) values[colId] = draft[colId];
+      else delete values[colId];
+    });
+    if (Object.keys(values).length) shift.fin = { values };
+    else delete shift.fin;
+  });
+  return team;
+}
+
+function queueFinWrite(shiftId) {
+  persist();
+  if (!fb) return;
+  clearTimeout(finWriteTimers[shiftId]);
+  finWriteTimers[shiftId] = setTimeout(() => {
+    const shift = state.team && state.team.shifts ? state.team.shifts[shiftId] : null;
+    if (shift) remoteSet('shifts/' + shiftId, shift);
+  }, 600);
+}
+
+function finPointList() {
+  const set = new Set();
+  const shifts = (state.team && state.team.shifts) || {};
+  Object.keys(shifts).forEach((id) => {
+    const v = shifts[id] && shifts[id].fin && shifts[id].fin.values && shifts[id].fin.values.point;
+    if (v) set.add(String(v).slice(0, 60));
+  });
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+function isFinEditing() {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest('[data-fin-scope]'));
+}
+
+/* Пересчитывает автоматические поля («авто: …») в строке таблицы или в форме смены. */
+function refreshFinAutoFields(scope) {
+  const inputs = scope.querySelectorAll('[data-fin-field]');
+  const vals = {};
+  inputs.forEach((i) => {
+    const v = String(i.value || '').trim();
+    if (v) vals[i.dataset.finField] = v;
+  });
+  inputs.forEach((i) => {
+    const col = finColumnById(i.dataset.finField);
+    if (!col || !col.calc) return;
+    if (String(i.value || '').trim()) {
+      i.classList.remove('is-auto');
+      i.placeholder = '';
+      return;
+    }
+    const auto = finCalcFromValues(vals, col);
+    i.classList.add('is-auto');
+    i.placeholder = auto === '' ? '' : 'авто: ' + fmtMoney(auto);
+  });
+}
+
+function refreshFinTotals(scope) {
+  const cols = finVisibleColumns();
+  const sums = {};
+  scope.querySelectorAll('[data-fin-row]').forEach((row) => {
+    const vals = {};
+    row.querySelectorAll('[data-fin-field]').forEach((i) => {
+      const v = String(i.value || '').trim();
+      if (v) vals[i.dataset.finField] = v;
+    });
+    cols.forEach((col) => {
+      if (!(col.type === 'money' || col.calc)) return;
+      let v = vals[col.id];
+      if (v == null && col.calc) v = finCalcFromValues(vals, col);
+      const n = parseMoney(v);
+      if (n != null) sums[col.id] = (sums[col.id] || 0) + n;
+    });
+  });
+  cols.forEach((col) => {
+    const cell = scope.querySelector('[data-fin-total="' + col.id + '"]');
+    if (!cell) return;
+    cell.textContent = sums[col.id] == null ? '—' : fmtMoney(sums[col.id]);
+  });
+}
+
 /* ---------- sync ---------- */
 
 function setSync(mode) {
@@ -449,7 +731,7 @@ async function connectFirebase() {
       clearTimeout(connectTimer);
       const raw = snap.val();
       if (raw) {
-        state.team = normalizeTeam(raw);
+        state.team = applyFinDrafts(normalizeTeam(raw));
         persist();
         render();
         setSync(state.connected ? 'online' : 'offline');
@@ -506,6 +788,11 @@ function applyTheme() {
 function render() {
   const app = $('#app');
   if (!app) return;
+  if (isFinEditing()) {
+    pendingRender = true;
+    return;
+  }
+  pendingRender = false;
   app.innerHTML = headerHTML() + '<main class="main">' + mainHTML() + '</main>';
   const chip = $('.sync');
   if (chip) chip.style.setProperty('--dot', syncMeta().color);
@@ -532,7 +819,7 @@ function headerHTML() {
       '</div>' +
     '</header>' +
     '<nav class="tabs">' +
-      [['month', 'Месяц'], ['list', 'Список'], ['team', 'Команда'], ['summary', 'Итого']].map((t) =>
+      [['month', 'Месяц'], ['list', 'Список'], ['finance', 'Учёт'], ['team', 'Команда'], ['summary', 'Итого']].map((t) =>
         '<button class="tab' + (state.tab === t[0] ? ' active' : '') + '" data-action="tab" data-tab="' + t[0] + '">' + t[1] + '</button>'
       ).join('') +
     '</nav>';
@@ -553,6 +840,7 @@ function mainHTML() {
     return '<div class="empty-state"><div class="spinner" style="margin:0 auto 14px"></div>Загрузка графика…</div>';
   }
   if (state.tab === 'list') return viewList();
+  if (state.tab === 'finance') return viewFinance();
   if (state.tab === 'team') return viewTeam();
   if (state.tab === 'summary') return viewSummary();
   return viewMonth();
@@ -714,6 +1002,196 @@ function viewTeam() {
     '<div class="section-head"><h2>Сотрудники</h2>' +
       '<button class="btn primary sm" data-action="new-employee">' + IC.plus + ' Добавить</button>' +
     '</div>' + cards;
+}
+
+/* ---------- finance view ---------- */
+
+function finGroupCells(cols, render, tag) {
+  let group = '';
+  return cols.map((col, i) => {
+    let gap = '';
+    if (group && col.group !== group) {
+      gap = '<' + tag + ' class="fin-sep" aria-hidden="true"></' + tag + '>';
+    }
+    group = col.group;
+    return gap + render(col, i);
+  }).join('');
+}
+
+function finTableCell(shift, col) {
+  if (col.auto) {
+    const auto = finAutoValue(shift, col);
+    return '<td class="fin-auto" title="' + esc(auto) + '">' + esc(auto) + '</td>';
+  }
+  const vals = finValues(shift);
+  const raw = vals[col.id];
+  const has = raw != null && String(raw).trim() !== '';
+  const auto = col.calc ? finCalcFromValues(vals, col) : '';
+  const ph = !has && auto !== '' ? 'авто: ' + fmtMoney(auto) : '';
+  const numeric = col.type === 'money' || col.type === 'number';
+  return '<td class="fin-td' + (numeric ? ' num' : '') + '">' +
+    '<input class="fin-input' + (!has && col.calc ? ' is-auto' : '') + '"' +
+      (col.id === 'point' ? ' list="fin-points"' : '') +
+      ' data-fin-shift="' + shift.id + '" data-fin-col="' + col.id + '" data-fin-field="' + col.id + '"' +
+      ' value="' + esc(has ? raw : '') + '"' +
+      (ph ? ' placeholder="' + esc(ph) + '"' : '') +
+      ' inputmode="' + (numeric ? 'decimal' : 'text') + '"' +
+      ' aria-label="' + esc(col.title) + '">' +
+  '</td>';
+}
+
+function finFootCell(col, list, isFirst) {
+  if (isFirst) return '<td class="fin-total-label">Итого</td>';
+  if (!(col.type === 'money' || col.calc)) return '<td></td>';
+  let sum = 0;
+  let any = false;
+  list.forEach((s) => {
+    const n = parseMoney(finValue(s, col));
+    if (n != null) { sum += n; any = true; }
+  });
+  return '<td class="num" data-fin-total="' + col.id + '">' + (any ? fmtMoney(sum) : '—') + '</td>';
+}
+
+function viewFinance() {
+  const fin = (state.team && state.team.finance) || normalizeFinance(null);
+  const cols = fin.columns.filter((c) => !c.hidden);
+  const list = monthShifts().sort((a, b) => a.date.localeCompare(b.date) || t2m(a.start) - t2m(b.start));
+  const points = finPointList();
+  const datalist = '<datalist id="fin-points">' + points.map((p) => '<option value="' + esc(p) + '"></option>').join('') + '</datalist>';
+
+  const head = '<div class="section-head"><h2>' + esc(fin.title) + '</h2>' +
+    '<div class="export-row">' +
+      '<button class="btn ghost sm" data-action="finance-settings">Настроить колонки</button>' +
+      '<button class="btn ghost sm" data-action="export-csv">' + IC.download + ' CSV</button>' +
+    '</div></div>';
+
+  if (!cols.length) {
+    return hintHTML() + monthBar() + head +
+      '<div class="empty">Все колонки скрыты. Нажмите «Настроить колонки», чтобы вернуть их.</div>';
+  }
+  if (!list.length) {
+    return hintHTML() + monthBar() + head + datalist +
+      '<div class="empty">В этом месяце пока нет смен.<br><span class="tiny">Учёт ведётся по сменам: сначала добавьте смену в календаре.</span></div>';
+  }
+
+  const th = finGroupCells(cols, (c) => '<th class="' + (c.type === 'text' ? '' : 'num') + '">' + esc(c.title) + '</th>', 'th');
+  const body = list.map((s) => {
+    const tds = finGroupCells(cols, (c) => finTableCell(s, c), 'td');
+    return '<tr data-fin-row="' + s.id + '">' + tds +
+      '<td class="fin-ops"><button class="icon-btn" data-action="edit-shift" data-id="' + s.id + '" aria-label="Открыть смену" title="Открыть смену">' + IC.edit + '</button></td>' +
+    '</tr>';
+  }).join('');
+  const foot = finGroupCells(cols, (c, i) => finFootCell(c, list, i === 0), 'td');
+
+  return hintHTML() + monthBar() + head + datalist +
+    '<div class="fin-wrap" data-fin-scope="table">' +
+      '<table class="fin-table">' +
+        '<thead><tr>' + th + '<th class="fin-ops"></th></tr></thead>' +
+        '<tbody>' + body + '</tbody>' +
+        '<tfoot><tr>' + foot + '<td class="fin-ops"></td></tr></tfoot>' +
+      '</table>' +
+    '</div>' +
+    '<p class="tiny muted" style="margin-top:10px">Безнал = Выручка − Наличные. Остаток в кассе = Наличные − Инкассация; размен в остатке не учитывается. Любое значение можно переписать вручную — очистите поле, чтобы вернуть авторасчёт.</p>';
+}
+
+function finColRow(c) {
+  const typeHtml = c.core || c.auto || c.calc
+    ? '<span class="fin-col-type">' + (c.auto ? 'из смены' : (c.calc ? 'авто' : (FIN_TYPE_LABEL[c.type] || c.type))) + '</span>'
+    : '<select class="select fin-type" data-col-type aria-label="Тип колонки">' +
+        ['text', 'money', 'time'].map((t) =>
+          '<option value="' + t + '"' + (c.type === t ? ' selected' : '') + '>' + FIN_TYPE_LABEL[t] + '</option>'
+        ).join('') +
+      '</select>';
+  return '<div class="fin-col-row" data-col-id="' + esc(c.id) + '" data-core="' + (c.core ? '1' : '0') + '">' +
+    '<div class="fin-col-move">' +
+      '<button type="button" class="icon-btn" data-action="fin-col-up" aria-label="Выше">↑</button>' +
+      '<button type="button" class="icon-btn" data-action="fin-col-down" aria-label="Ниже">↓</button>' +
+    '</div>' +
+    '<input class="input fin-col-title" data-col-title maxlength="60" value="' + esc(c.title) + '" aria-label="Название колонки">' +
+    typeHtml +
+    '<label class="fin-col-show"><input type="checkbox" data-col-show' + (c.hidden ? '' : ' checked') + '><span class="tiny muted">видна</span></label>' +
+    (c.core ? '' : '<button type="button" class="icon-btn danger" data-action="fin-col-del" aria-label="Удалить колонку">' + IC.trash + '</button>') +
+  '</div>';
+}
+
+function openFinanceSettings() {
+  const fin = (state.team && state.team.finance) || normalizeFinance(null);
+  const rows = fin.columns.map(finColRow).join('');
+  openSheet(
+    '<div class="sheet-head">' +
+      '<div class="grow"><div class="sheet-title">Таблица учёта</div>' +
+      '<div class="tiny muted">Колонки видны всей команде</div></div>' +
+      '<button class="icon-btn" data-action="close-modal" aria-label="Закрыть">' + IC.close + '</button>' +
+    '</div>' +
+    '<form class="sheet-form" data-form="finance-cols" novalidate>' +
+      '<div class="sheet-body">' +
+        '<div class="form-error" data-error></div>' +
+        '<label class="field"><span class="label">Название таблицы</span>' +
+          '<input class="input" type="text" name="title" maxlength="60" value="' + esc(fin.title) + '"></label>' +
+        '<p class="tiny muted" style="margin:-4px 0 12px">«ФИО», «Дата» и «Начало смены» берутся из смены. Базовые колонки можно скрыть и переименовать, свои колонки — удалить.</p>' +
+        '<div class="fin-cols" id="fin-cols">' + rows + '</div>' +
+        '<div class="fin-col-add">' +
+          '<input class="input" id="fin-new-title" maxlength="60" placeholder="Новая колонка" aria-label="Название новой колонки">' +
+          '<select class="select fin-type" id="fin-new-type" aria-label="Тип новой колонки">' +
+            ['text', 'money', 'time'].map((t) => '<option value="' + t + '">' + FIN_TYPE_LABEL[t] + '</option>').join('') +
+          '</select>' +
+          '<button type="button" class="btn sm" data-action="fin-col-add">' + IC.plus + ' Добавить</button>' +
+        '</div>' +
+        '<button type="button" class="btn danger sm" data-action="fin-cols-reset" style="margin-top:12px">Сбросить к шаблону</button>' +
+      '</div>' +
+      '<div class="sheet-foot">' +
+        '<button type="button" class="btn ghost" data-action="close-modal">Отмена</button>' +
+        '<button type="submit" class="btn primary grow">Сохранить</button>' +
+      '</div>' +
+    '</form>'
+  );
+}
+
+function saveFinanceFromForm(form) {
+  const title = String(form.elements.title.value || '').trim().slice(0, 60) || 'Финансовый учёт';
+  const prev = (state.team && state.team.finance) || normalizeFinance(null);
+  const byId = {};
+  prev.columns.forEach((c) => { byId[c.id] = c; });
+
+  const columns = [];
+  const seen = {};
+  form.querySelectorAll('#fin-cols .fin-col-row').forEach((row) => {
+    const id = row.dataset.colId;
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    const titleInput = row.querySelector('[data-col-title]');
+    const showInput = row.querySelector('[data-col-show]');
+    const typeSelect = row.querySelector('[data-col-type]');
+    const titleVal = String((titleInput && titleInput.value) || '').trim().slice(0, 60);
+    const base = byId[id];
+    if (base) {
+      columns.push(Object.assign({}, base, {
+        title: titleVal || base.title,
+        hidden: !(showInput && showInput.checked),
+      }));
+    } else {
+      const type = typeSelect && ['text', 'money', 'time'].indexOf(typeSelect.value) >= 0 ? typeSelect.value : 'text';
+      columns.push({
+        id,
+        title: titleVal || 'Колонка',
+        type,
+        auto: null,
+        calc: null,
+        group: FIN_BODY,
+        hidden: !(showInput && showInput.checked),
+        core: false,
+      });
+    }
+  });
+
+  if (!columns.length) return showFormError(form, 'Оставьте хотя бы одну колонку.');
+
+  state.team.finance = { title, columns };
+  persist();
+  remoteSet('finance', state.team.finance);
+  closeSheet();
+  render();
+  toast('Таблица обновлена');
 }
 
 function viewSummary() {
@@ -884,6 +1362,24 @@ function openDay(date) {
 
 /* ---------- shift form ---------- */
 
+function finFieldHTML(shift, col) {
+  const vals = finValues(shift);
+  const raw = vals[col.id];
+  const has = raw != null && String(raw).trim() !== '';
+  const auto = col.calc ? finCalcFromValues(vals, col) : '';
+  const ph = !has && auto !== '' ? 'авто: ' + fmtMoney(auto) : '';
+  const numeric = col.type === 'money' || col.type === 'number';
+  return '<label class="field fin-field"><span class="label">' + esc(col.title) + '</span>' +
+    '<input class="input' + (!has && col.calc ? ' is-auto' : '') + '"' +
+      ' data-fin-field="' + col.id + '"' + (col.calc ? ' data-fin-calc="1"' : '') +
+      ' data-auto="' + (!has && col.calc ? '1' : '0') + '"' +
+      (col.id === 'point' ? ' list="fin-points"' : '') +
+      ' value="' + esc(has ? raw : '') + '"' +
+      (ph ? ' placeholder="' + esc(ph) + '"' : '') +
+      ' inputmode="' + (numeric ? 'decimal' : 'text') + '">' +
+  '</label>';
+}
+
 function openShiftForm(id, date) {
   if (!state.team) return;
   const emps = empList();
@@ -906,6 +1402,24 @@ function openShiftForm(id, date) {
   const options = emps.map((e) =>
     '<option value="' + e.id + '"' + (e.id === shift.empId ? ' selected' : '') + '>' + esc(e.name) + '</option>'
   ).join('');
+
+  const finCols = finVisibleColumns();
+  const finHeadCols = finCols.filter((c) => !c.auto && c.group === FIN_HEAD);
+  const finBodyCols = finCols.filter((c) => !c.auto && c.group !== FIN_HEAD);
+  const finOpen = Object.keys(finValues(shift)).length > 0;
+  const finPoints = finPointList();
+  const finBlock = (finHeadCols.length || finBodyCols.length)
+    ? '<details class="fin-block" data-fin-scope="form"' + (finOpen ? ' open' : '') + '>' +
+        '<summary>Финансовый учёт <span class="tiny muted">— необязательно</span></summary>' +
+        '<div class="fin-block-body">' +
+          (finHeadCols.length ? '<div class="fin-grid">' + finHeadCols.map((c) => finFieldHTML(shift, c)).join('') + '</div>' : '') +
+          (finHeadCols.length && finBodyCols.length ? '<div class="fin-split" aria-hidden="true"></div>' : '') +
+          (finBodyCols.length ? '<div class="fin-grid">' + finBodyCols.map((c) => finFieldHTML(shift, c)).join('') + '</div>' : '') +
+          '<p class="tiny muted" style="margin:-2px 0 4px">Безнал = Выручка − Наличные. Остаток в кассе = Наличные − Инкассация; размен в остатке не учитывается. Очистите поле, чтобы вернуть авторасчёт.</p>' +
+          '<datalist id="fin-points">' + finPoints.map((p) => '<option value="' + esc(p) + '"></option>').join('') + '</datalist>' +
+        '</div>' +
+      '</details>'
+    : '';
 
   openSheet(
     '<div class="sheet-head">' +
@@ -933,6 +1447,7 @@ function openShiftForm(id, date) {
         '</div>' +
         '<label class="field"><span class="label">Примечание (необязательно)</span>' +
           '<input class="input" type="text" name="note" maxlength="120" value="' + esc(shift.note || '') + '" placeholder="например, стажировка"></label>' +
+        finBlock +
         '<p class="tiny muted">Если конец раньше начала, смена считается ночной (через полночь).</p>' +
       '</div>' +
       '<div class="sheet-foot">' +
@@ -946,6 +1461,12 @@ function openShiftForm(id, date) {
   if (form) {
     syncPresetUI(form);
     form.addEventListener('input', () => syncPresetUI(form));
+    form.addEventListener('input', (e) => {
+      const inp = e.target.closest('[data-fin-field]');
+      if (!inp) return;
+      if (inp.dataset.finCalc === '1') inp.dataset.auto = String(inp.value || '').trim() ? '0' : '1';
+      refreshFinAutoFields(form);
+    });
     const first = form.querySelector('input[name="start"]');
     if (first && !existing) setTimeout(() => first.focus(), 250);
   }
@@ -994,6 +1515,22 @@ async function saveShiftFromForm(form) {
   if (t2m(start) === t2m(end)) return showFormError(form, 'Начало и конец смены не могут совпадать.');
 
   const candidate = { id, date, empId, start: m2t(t2m(start)), end: m2t(t2m(end)), note };
+
+  /* Финансовый учёт: сохраняем только заполненные поля.
+     Значения для скрытых/удалённых колонок не трогаем. */
+  const existingShift = state.team.shifts[id];
+  const finVals = Object.assign({}, finValues(existingShift));
+  form.querySelectorAll('[data-fin-field]').forEach((inp) => {
+    const colId = inp.dataset.finField;
+    const col = finColumnById(colId);
+    if (!col) return;
+    const val = String(inp.value || '').trim().slice(0, 200);
+    const isAutoCalc = col.calc && inp.dataset.auto === '1';
+    if (isAutoCalc || !val) delete finVals[colId];
+    else finVals[colId] = val;
+  });
+  if (Object.keys(finVals).length) candidate.fin = { values: finVals };
+
   const clash = shiftsOf(date).find((s) => s.id !== id && s.empId === empId && overlaps(candidate, s));
   if (clash) {
     return showFormError(form, 'Пересечение: у сотрудника «' + emp.name + '» уже есть смена ' + clash.start + '–' + clash.end + ' в этот день.');
@@ -1395,6 +1932,7 @@ async function createTeam() {
     employees: {},
     shifts: {},
     log: {},
+    finance: normalizeFinance(null),
     createdAt: Date.now(),
   };
   try {
@@ -1429,10 +1967,11 @@ function download(filename, content, type) {
 function exportCSV() {
   const list = monthShifts().sort((a, b) => a.date.localeCompare(b.date) || t2m(a.start) - t2m(b.start));
   if (!list.length) { toast('В этом месяце нет смен'); return; }
-  const rows = [['Дата', 'День', 'Сотрудник', 'Начало', 'Конец', 'Часы', 'Примечание']];
+  const finCols = finVisibleColumns().filter((c) => !c.auto);
+  const rows = [['Дата', 'День', 'Сотрудник', 'Начало', 'Конец', 'Часы', 'Примечание'].concat(finCols.map((c) => c.title))];
   list.forEach((s) => {
     const emp = empById(s.empId);
-    rows.push([
+    const base = [
       fmtDayShort(s.date),
       WEEK_SHORT[weekdayIndex(s.date)],
       emp ? emp.name : 'Удалён',
@@ -1440,7 +1979,16 @@ function exportCSV() {
       s.end,
       String(Math.round((durMin(s) / 60) * 10) / 10).replace('.', ','),
       s.note || '',
-    ]);
+    ];
+    const fin = finCols.map((c) => {
+      const v = finValue(s, c);
+      if (c.type === 'money' || c.calc) {
+        const n = parseMoney(v);
+        return n == null ? '' : String(n).replace('.', ',');
+      }
+      return v;
+    });
+    rows.push(base.concat(fin));
   });
   const csv = rows.map((r) => r.map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(';')).join('\r\n');
   download('smena-' + monthPrefix() + '.csv', '\ufeff' + csv, 'text/csv;charset=utf-8');
@@ -1587,6 +2135,45 @@ async function handleAction(action, el, ev) {
       location.reload();
       break;
     }
+    case 'finance-settings':
+      openFinanceSettings();
+      break;
+    case 'fin-col-add': {
+      const form = el.closest('form');
+      if (!form) break;
+      const titleInput = form.querySelector('#fin-new-title');
+      const typeSelect = form.querySelector('#fin-new-type');
+      const title = String((titleInput && titleInput.value) || '').trim();
+      if (!title) { if (titleInput) titleInput.focus(); break; }
+      const type = typeSelect && ['text', 'money', 'time'].indexOf(typeSelect.value) >= 0 ? typeSelect.value : 'text';
+      const row = finColRow({ id: 'f_' + uid(), title, type, group: FIN_BODY, hidden: false, core: false });
+      form.querySelector('#fin-cols').insertAdjacentHTML('beforeend', row);
+      titleInput.value = '';
+      titleInput.focus();
+      break;
+    }
+    case 'fin-col-del': {
+      const row = el.closest('.fin-col-row');
+      if (row) row.remove();
+      break;
+    }
+    case 'fin-col-up': {
+      const row = el.closest('.fin-col-row');
+      if (row && row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
+      break;
+    }
+    case 'fin-col-down': {
+      const row = el.closest('.fin-col-row');
+      if (row && row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row);
+      break;
+    }
+    case 'fin-cols-reset': {
+      const form = el.closest('form');
+      const ok = await confirmDialog('Сбросить колонки?',
+        'Колонки вернутся к стандартному финансовому шаблону. Введённые суммы сохранятся.', 'Сбросить');
+      if (ok && form) form.querySelector('#fin-cols').innerHTML = finDefaultColumns().map(finColRow).join('');
+      break;
+    }
     case 'export-csv':
       exportCSV();
       break;
@@ -1623,6 +2210,45 @@ document.addEventListener('change', (e) => {
   }
 });
 
+/* Ввод в таблице учёта: сразу считаем итоги, в облако отправляем с задержкой. */
+document.addEventListener('input', (e) => {
+  const inp = e.target.closest('[data-fin-shift][data-fin-col]');
+  if (!inp) return;
+  const shiftId = inp.dataset.finShift;
+  const shift = state.team && state.team.shifts ? state.team.shifts[shiftId] : null;
+  if (!shift) return;
+  const col = finColumnById(inp.dataset.finCol);
+  if (!col) return;
+
+  setFinValue(shift, col.id, inp.value);
+  setFinDraft(shiftId, col.id, inp.value);
+  if (col.calc) inp.classList.toggle('is-auto', !String(inp.value || '').trim());
+  const row = inp.closest('[data-fin-row]');
+  if (row) refreshFinAutoFields(row);
+  const scope = inp.closest('[data-fin-scope]');
+  if (scope) refreshFinTotals(scope);
+  queueFinWrite(shiftId);
+});
+
+/* Ушли из поля — отправляем сразу, не дожидаясь задержки. */
+document.addEventListener('change', (e) => {
+  const inp = e.target && e.target.closest ? e.target.closest('[data-fin-shift][data-fin-col]') : null;
+  if (!inp) return;
+  const shiftId = inp.dataset.finShift;
+  clearTimeout(finWriteTimers[shiftId]);
+  persist();
+  const shift = state.team && state.team.shifts ? state.team.shifts[shiftId] : null;
+  if (shift) remoteSet('shifts/' + shiftId, shift);
+});
+
+/* Пока человек печатает в таблице, не перерисовываем экран —
+   иначе слетает курсор. Отложенная отрисовка выполнится после выхода из поля. */
+document.addEventListener('focusout', () => {
+  setTimeout(() => {
+    if (pendingRender && !isFinEditing()) render();
+  }, 0);
+});
+
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('form[data-form]');
   if (!form) return;
@@ -1632,6 +2258,7 @@ document.addEventListener('submit', (e) => {
     if (kind === 'shift') saveShiftFromForm(form);
     else if (kind === 'employee') saveEmployeeFromForm(form);
     else if (kind === 'settings') saveSettingsFromForm(form);
+    else if (kind === 'finance-cols') saveFinanceFromForm(form);
     else if (kind === 'welcome') {
       const fd = new FormData(form);
       const name = String(fd.get('name') || '').trim();
