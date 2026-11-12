@@ -1,7 +1,7 @@
 {
-  "name": "Смена — совместный график работы",
-  "short_name": "Смена",
-  "description": "Совместный график смен: 10:00–21:00, разделённые смены, синхронизация между сотрудниками.",
+  "name": "MrCHAO — смены и финансы",
+  "short_name": "MrCHAO",
+  "description": "График смен MrCHAO: 10:00–21:00, разделённые смены, финансовый учёт и синхронизация между сотрудниками.",
   "lang": "ru",
   "dir": "ltr",
   "start_url": "./",
@@ -9,8 +9,8 @@
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
   "orientation": "any",
-  "background_color": "#0d0f16",
-  "theme_color": "#0d0f16",
+  "background_color": "#12100d",
+  "theme_color": "#12100d",
   "categories": ["productivity", "business"],
   "icons": [
     {

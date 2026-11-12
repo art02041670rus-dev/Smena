@@ -1,5 +1,5 @@
 /* =========================================================
-   Смена — совместный график работы
+   MrCHAO — смены и финансы
    ========================================================= */
 
 *,
@@ -7,38 +7,48 @@
 *::after { box-sizing: border-box; }
 
 :root {
-  --bg: #0d0f16;
-  --surface: #151823;
-  --surface-2: #1b1f2c;
-  --surface-3: #232838;
-  --border: #272c3c;
-  --border-soft: #1f2432;
-  --text: #e9ecf5;
-  --muted: #8a93a8;
-  --muted-2: #b0b8cb;
-  --accent: #7c6cff;
-  --accent-2: #4cc9f0;
-  --ok: #3ddc97;
-  --warn: #ffb020;
-  --danger: #ff5d7a;
+  /* Фирменные цвета MrCHAO: тёплый крафт-оранжевый, чёрный и бумажный крем. */
+  --bg: #12100d;
+  --surface: #1a1712;
+  --surface-2: #221e18;
+  --surface-3: #2c2620;
+  --border: #3a332a;
+  --border-soft: #2a251e;
+  --text: #f3e9da;
+  --muted: #a2947f;
+  --muted-2: #c4b6a2;
+  --accent: #e2a45c;
+  --accent-2: #cf5b3a;
+  --ok: #7fbf7f;
+  --warn: #e2a45c;
+  --danger: #e06a5a;
+  --finest: #e0a45c;
+  --ink: #17130e;
   --radius: 14px;
-  --shadow: 0 18px 40px rgba(0, 0, 0, .45);
-  --shadow-sm: 0 4px 14px rgba(0, 0, 0, .25);
+  --shadow: 0 18px 40px rgba(0, 0, 0, .5);
+  --shadow-sm: 0 4px 14px rgba(0, 0, 0, .3);
   color-scheme: dark;
 }
 
 html[data-theme="light"] {
-  --bg: #f2f4fa;
-  --surface: #ffffff;
-  --surface-2: #f7f8fc;
-  --surface-3: #eceff8;
-  --border: #e1e5f0;
-  --border-soft: #eaeef7;
-  --text: #12151f;
-  --muted: #667089;
-  --muted-2: #4d566e;
-  --shadow: 0 18px 40px rgba(25, 35, 70, .14);
-  --shadow-sm: 0 4px 14px rgba(25, 35, 70, .08);
+  --bg: #f6efe3;
+  --surface: #fffdf8;
+  --surface-2: #faf3e7;
+  --surface-3: #f1e5d2;
+  --border: #e6d8c4;
+  --border-soft: #efe4d3;
+  --text: #1b1712;
+  --muted: #7b6a56;
+  --muted-2: #5c4e3e;
+  --accent: #c87f2e;
+  --accent-2: #b34a2f;
+  --ok: #4f8a4f;
+  --warn: #a86a1e;
+  --danger: #b3452f;
+  --finest: #c87f2e;
+  --ink: #17130e;
+  --shadow: 0 18px 40px rgba(70, 48, 22, .16);
+  --shadow-sm: 0 4px 14px rgba(70, 48, 22, .1);
   color-scheme: light;
 }
 
@@ -109,9 +119,9 @@ svg { display: block; }
   border-radius: 12px;
   display: grid;
   place-items: center;
-  color: #fff;
-  background: linear-gradient(140deg, #7c6cff, #4cc9f0);
-  box-shadow: 0 6px 18px rgba(124, 108, 255, .35);
+  color: var(--ink);
+  background: linear-gradient(140deg, #e8b06a, #d3863a);
+  box-shadow: 0 6px 18px rgba(207, 128, 46, .32);
   flex: none;
 }
 
@@ -205,9 +215,9 @@ svg { display: block; }
 .tab:hover { color: var(--text); background: var(--surface); }
 
 .tab.active {
-  color: #fff;
-  background: linear-gradient(140deg, #7c6cff, #6a5bf0);
-  box-shadow: 0 6px 16px rgba(124, 108, 255, .3);
+  color: var(--ink);
+  background: linear-gradient(140deg, #e8b06a, #d3863a);
+  box-shadow: 0 6px 16px rgba(207, 128, 46, .3);
 }
 
 /* ---------- hints / banners ---------- */
@@ -632,10 +642,10 @@ svg { display: block; }
 .btn:active { transform: scale(.98); }
 
 .btn.primary {
-  background: linear-gradient(140deg, #7c6cff, #6555ef);
+  background: linear-gradient(140deg, #e8b06a, #d3863a);
   border-color: transparent;
-  color: #fff;
-  box-shadow: 0 8px 20px rgba(124, 108, 255, .3);
+  color: var(--ink);
+  box-shadow: 0 8px 20px rgba(207, 128, 46, .3);
 }
 
 .btn.primary:hover { filter: brightness(1.07); }
@@ -971,7 +981,7 @@ textarea.input:focus {
 .fin-input:focus {
   border-color: var(--accent);
   background: var(--surface-2);
-  box-shadow: 0 0 0 3px rgba(124, 108, 255, .15);
+  box-shadow: 0 0 0 3px rgba(226, 164, 92, .18);
 }
 
 .fin-input.is-auto { color: var(--muted); }
@@ -1132,9 +1142,9 @@ textarea.input:focus {
   border-radius: 18px;
   display: grid;
   place-items: center;
-  color: #fff;
-  background: linear-gradient(140deg, #7c6cff, #4cc9f0);
-  box-shadow: 0 14px 34px rgba(124, 108, 255, .4);
+  color: var(--ink);
+  background: linear-gradient(140deg, #e8b06a, #d3863a);
+  box-shadow: 0 14px 34px rgba(207, 128, 46, .4);
 }
 
 .welcome h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; letter-spacing: -.3px; }
@@ -1288,4 +1298,201 @@ details.help .help-body li { margin-bottom: 6px; }
   .day { min-height: 96px; break-inside: avoid; }
   .chip { background: #f2f2f2 !important; box-shadow: none !important; color: #000; }
   .cname, .ctime { display: inline !important; }
+}
+
+/* ---------- auth / roles / teams (MrCHAO) ---------- */
+
+.auth-wrap {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.auth-card h2 { font-size: 26px; margin: 12px 0 4px; letter-spacing: .01em; }
+.auth-sub { margin: 0 0 20px; font-size: 13px; }
+.auth-title { font-size: 15px; font-weight: 700; margin: 0 0 14px; color: var(--text); text-align: left; }
+
+.auth-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  background: var(--surface-2);
+  border-radius: 12px;
+}
+
+.auth-tab {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.auth-tab.active { background: var(--accent); color: var(--ink); }
+.auth-form { text-align: left; }
+.auth-form .field { margin-bottom: 12px; }
+.auth-card .btn.primary.block { margin-top: 4px; }
+.auth-foot { margin-top: 16px; line-height: 1.5; }
+
+.link-btn {
+  background: none;
+  border: 0;
+  padding: 10px;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.link-btn:hover { text-decoration: underline; }
+.link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+
+.boot-screen {
+  min-height: 70dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.boot-logo {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.boot-logo svg { width: 28px; height: 28px; }
+
+.team-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.team-item.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.team-item-name { font-weight: 600; font-size: 14px; }
+.team-item-meta { font-size: 11.5px; color: var(--muted); }
+
+.fin-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.fin-td { position: relative; }
+.fin-td .fin-mark {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  margin: 0;
+  pointer-events: auto;
+}
+
+.fin-input.is-locked,
+.input.is-locked {
+  opacity: .72;
+  cursor: not-allowed;
+  background: var(--surface-2);
+}
+
+.settings-sub {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--muted);
+  margin: 18px 0 10px;
+  font-weight: 700;
+}
+
+.member-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.member-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.member-name { font-weight: 600; font-size: 14px; }
+
+.role-badge {
+  font-size: 10.5px;
+  padding: 3px 7px;
+  border-radius: 20px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  background: var(--surface-3);
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+.role-manager { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.role-admin { background: color-mix(in srgb, var(--accent-2) 22%, transparent); color: var(--accent-2); }
+
+.member-controls {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 6px;
+}
+
+.member-controls .select { width: 100%; }
+
+@media (max-width: 420px) {
+  .auth-card { padding: 22px 18px; }
+  .member-controls { grid-template-columns: 1fr; }
 }

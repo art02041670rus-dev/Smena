@@ -1,0 +1,70 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid == $uid || auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin')",
+        ".write": "auth != null && (auth.uid == $uid || auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin')",
+        "role": {
+          ".validate": "newData.isString() && (newData.val() == 'employee' || newData.val() == 'manager' || newData.val() == 'admin') && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || newData.val() == 'employee' || (data.exists() && newData.val() == data.val()))"
+        },
+        "memberships": {
+          "$team": {
+            ".validate": "newData.hasChild('empId') && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || newData.child('role').val() == 'employee' || (data.exists() && newData.child('role').val() == data.child('role').val()))"
+          }
+        }
+      }
+    },
+
+    "teams": {
+      ".read": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin')",
+
+      "$team": {
+        ".read": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())",
+        ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin')",
+
+        "employees": {
+          ".read": "auth != null",
+          ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).child('role').val() == 'manager')"
+        },
+
+        "name": {
+          ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).child('role').val() == 'manager')"
+        },
+
+        "finance": {
+          ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).child('role').val() == 'manager')"
+        },
+
+        "shifts": {
+          ".read": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())",
+          ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())",
+
+          "$shift": {
+            ".validate": "!newData.hasChild('fin')"
+          }
+        },
+
+        "fin": {
+          ".read": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())",
+
+          "$shift": {
+            ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).child('role').val() == 'manager' || (root.child('users').child(auth.uid).child('memberships').child($team).exists() && root.child('teams').child($team).child('shifts').child($shift).child('tsStart').exists() && root.child('teams').child($team).child('shifts').child($shift).child('tsEnd').exists() && now >= root.child('teams').child($team).child('shifts').child($shift).child('tsStart').val() - 900000 && now <= root.child('teams').child($team).child('shifts').child($shift).child('tsEnd').val() + 86400000))"
+          }
+        },
+
+        "members": {
+          ".read": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())",
+
+          "$uid": {
+            ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || (auth.uid == $uid && newData.child('role').val() == 'employee'))"
+          }
+        },
+
+        "log": {
+          ".read": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())",
+          ".write": "auth != null && (auth.token.email == 'artem_rusan@mail.ru' || auth.token.email == 'Artem_rusan@mail.ru' || root.child('users').child(auth.uid).child('role').val() == 'admin' || root.child('users').child(auth.uid).child('memberships').child($team).exists())"
+        }
+      }
+    }
+  }
+}

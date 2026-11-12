@@ -1,5 +1,5 @@
 /*
- * Настройки приложения «Смена».
+ * Настройки приложения MrCHAO.
  *
  * Здесь можно один раз указать общие для всей команды данные —
  * тогда каждому сотруднику не придётся ничего вводить вручную.
@@ -30,7 +30,7 @@
 window.SMENA_CONFIG = {
   teamCode: "mrchao-podsolnuh",
   firebase: {
-    apiKey: "AIzaSyBW51DdhtVZsrquxqgRYpwgMWWET5Zy0eU",
+    apiKey: "AIzaSyCJQoYsQB4bj7toOupZoFuw5IWLKouhZsM",
     authDomain: "smena-23755.firebaseapp.com",
     databaseURL: "https://smena-23755-default-rtdb.europe-west1.firebasedatabase.app",
     projectId: "smena-23755",

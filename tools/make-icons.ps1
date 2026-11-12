@@ -1,4 +1,4 @@
-Add-Type -AssemblyName System.Drawing
+﻿Add-Type -AssemblyName System.Drawing
 
 function New-RoundPath([double]$x, [double]$y, [double]$w, [double]$h, [double]$r) {
   $p = New-Object System.Drawing.Drawing2D.GraphicsPath
@@ -21,8 +21,8 @@ function New-Icon([int]$size, [string]$out, [bool]$maskable) {
   $full = New-Object System.Drawing.Rectangle(0, 0, $size, $size)
   $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
     $full,
-    [System.Drawing.Color]::FromArgb(124, 108, 255),
-    [System.Drawing.Color]::FromArgb(76, 201, 240),
+    [System.Drawing.Color]::FromArgb(227, 169, 95),
+    [System.Drawing.Color]::FromArgb(200, 132, 60),
     45.0
   )
 
@@ -42,12 +42,12 @@ function New-Icon([int]$size, [string]$out, [bool]$maskable) {
   }
   $g.ScaleTransform([float]$k, [float]$k)
 
-  $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-  $light = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(238, 241, 255))
-  $violet = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(124, 108, 255))
-  $cyan = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(76, 201, 240))
-  $pale = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(223, 228, 255))
-  $pale2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(232, 236, 255))
+  $white = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(251, 243, 230))
+  $light = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(241, 226, 202))
+  $violet = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(26, 23, 18))
+  $cyan = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(179, 69, 47))
+  $pale = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(217, 195, 163))
+  $pale2 = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(231, 214, 189))
 
   # "кольца" календаря
   $r1 = New-RoundPath 150 96 34 66 17
@@ -86,3 +86,6 @@ New-Icon 192 (Join-Path $dir 'icon-192.png') $false
 New-Icon 512 (Join-Path $dir 'icon-512.png') $false
 New-Icon 180 (Join-Path $dir 'icon-180.png') $false
 New-Icon 512 (Join-Path $dir 'icon-maskable-512.png') $true
+
+
+

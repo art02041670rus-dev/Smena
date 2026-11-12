@@ -1,19 +1,24 @@
 'use strict';
 
 /* =========================================================
-   «Смена» — совместный график работы
+   «MrCHAO» — смены и финансовый учёт
    Чистый JS без сборки. Работает локально и с Firebase.
    ========================================================= */
 
 const SDK_BASE = 'https://www.gstatic.com/firebasejs/10.12.2/';
 const SDK_APP = SDK_BASE + 'firebase-app-compat.js';
+const SDK_AUTH = SDK_BASE + 'firebase-auth-compat.js';
 const SDK_DB = SDK_BASE + 'firebase-database-compat.js';
 const CFG = window.SMENA_CONFIG || {};
+
+/* Администраторы MrCHAO. Email сравнивается без учёта регистра. */
+const ADMIN_EMAILS = ['artem_rusan@mail.ru'];
+const ROLE_LABEL = { employee: 'Сотрудник', manager: 'Менеджер', admin: 'Администратор' };
 
 const K_SETTINGS = 'smena.settings.v1';
 
 const COLORS = [
-  '#7c6cff', '#4cc9f0', '#3ddc97', '#ffb020', '#ff5d7a', '#f472b6',
+  '#e2a45c', '#cf5b3a', '#8a9a5b', '#d9b98a', '#b3452f', '#c98f4a',
   '#a3e635', '#fb923c', '#22d3ee', '#c084fc', '#facc15', '#94a3b8',
 ];
 
@@ -56,6 +61,8 @@ const IC = {
   download: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>',
   upload: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>',
   calendar: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>',
+  layers: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>',
 };
 
 /* ---------- state ---------- */
@@ -72,9 +79,21 @@ const state = {
   promptedCreate: false,
   pendingCreate: false,
   openDate: null,
+  authUser: null,
+  profile: null,
+  authReady: false,
+  authMode: 'login',
+  authError: '',
+  profileError: '',
+  joinTeam: null,
+  teams: [],
 };
 
 let fb = null;
+let auth = null;
+let teamRef = null;
+let connectedBound = false;
+let pendingRegName = '';
 let toastTimer = 0;
 let connectTimer = 0;
 let everConnected = false;
@@ -148,6 +167,13 @@ function fmtDay(dateStr) {
 function fmtDayShort(dateStr) {
   const d = fromYmd(dateStr);
   return pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1);
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return '';
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return '';
+  return d.getDate() + ' ' + MONTH_GEN[d.getMonth()] + ', ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
 
 function weekdayIndex(dateStr) {
@@ -233,6 +259,7 @@ function normalizeTeam(raw) {
     employees: {},
     shifts: {},
     log: {},
+    members: {},
     finance: normalizeFinance(raw.finance),
     createdAt: Number(raw.createdAt) || Date.now(),
   };
@@ -262,17 +289,21 @@ function normalizeTeam(raw) {
         by: s.by ? String(s.by).slice(0, 40) : '',
         at: Number(s.at) || 0,
       };
-      if (s.fin && typeof s.fin === 'object' && s.fin.values && typeof s.fin.values === 'object') {
-        const values = {};
-        Object.keys(s.fin.values).slice(0, 80).forEach((key) => {
-          const v = s.fin.values[key];
-          if (v == null || typeof v === 'object') return;
-          const str = String(v).trim().slice(0, 200);
-          if (str) values[key] = str;
-        });
-        if (Object.keys(values).length) shift.fin = { values };
-      }
+      const fin = normalizeFinBlock(raw.fin && raw.fin[id]) || normalizeFinBlock(s.fin);
+      if (fin) shift.fin = fin;
       team.shifts[id] = shift;
+    });
+  }
+  if (raw.members && typeof raw.members === 'object') {
+    Object.keys(raw.members).slice(0, 300).forEach((memberId) => {
+      const m = raw.members[memberId];
+      if (!m || typeof m !== 'object') return;
+      team.members[memberId] = {
+        name: String(m.name || '').slice(0, 60),
+        role: m.role === 'admin' ? 'admin' : (m.role === 'manager' ? 'manager' : 'employee'),
+        empId: m.empId ? String(m.empId).slice(0, 40) : '',
+        at: Number(m.at) || 0,
+      };
     });
   }
   if (raw.log && typeof raw.log === 'object') {
@@ -289,6 +320,35 @@ function normalizeTeam(raw) {
     });
   }
   return team;
+}
+
+function normalizeFinBlock(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const values = {};
+  if (raw.values && typeof raw.values === 'object') {
+    Object.keys(raw.values).slice(0, 80).forEach((key) => {
+      const v = raw.values[key];
+      if (v == null || typeof v === 'object') return;
+      const str = String(v).trim().slice(0, 200);
+      if (str) values[key] = str;
+    });
+  }
+  const meta = {};
+  if (raw.meta && typeof raw.meta === 'object') {
+    Object.keys(raw.meta).slice(0, 80).forEach((key) => {
+      const m = raw.meta[key];
+      if (!m || typeof m !== 'object') return;
+      meta[key] = {
+        by: String(m.by || '').slice(0, 60),
+        at: Number(m.at) || 0,
+        role: m.role === 'manager' ? 'manager' : '',
+      };
+    });
+  }
+  if (!Object.keys(values).length && !Object.keys(meta).length) return null;
+  const out = { values };
+  if (Object.keys(meta).length) out.meta = meta;
+  return out;
 }
 
 function normalizeFinance(raw) {
@@ -581,7 +641,7 @@ function queueFinWrite(shiftId) {
   clearTimeout(finWriteTimers[shiftId]);
   finWriteTimers[shiftId] = setTimeout(() => {
     const shift = state.team && state.team.shifts ? state.team.shifts[shiftId] : null;
-    if (shift) remoteSet('shifts/' + shiftId, shift);
+    if (shift) remoteSet('fin/' + shiftId, shift.fin || null);
   }, 600);
 }
 
@@ -646,6 +706,130 @@ function refreshFinTotals(scope) {
   });
 }
 
+/* ---------- auth / roles ---------- */
+
+const emailLower = (v) => String(v || '').trim().toLowerCase();
+
+function myEmail() { return state.authUser ? emailLower(state.authUser.email) : ''; }
+function isAdminEmail() { return ADMIN_EMAILS.indexOf(myEmail()) >= 0; }
+function myRole() {
+  if (isAdminEmail()) return 'admin';
+  if (state.profile && state.profile.role === 'admin') return 'admin';
+  const code = state.settings.teamCode;
+  const m = code && myMemberships()[code];
+  if (m && m.role === 'manager') return 'manager';
+  if (!code && state.profile && state.profile.role === 'manager') return 'manager';
+  return 'employee';
+}
+function isAdmin() { return myRole() === 'admin'; }
+function isManager() { return myRole() === 'manager'; }
+function isStaff() { return isAdmin() || isManager(); }
+function myName() { return (state.profile && state.profile.name) || state.settings.name || 'Сотрудник'; }
+function myMemberships() { return (state.profile && state.profile.memberships) || {}; }
+function myTeams() {
+  if (isAdmin()) {
+    const list = state.teams.slice();
+    if (state.settings.teamCode && list.indexOf(state.settings.teamCode) < 0) list.unshift(state.settings.teamCode);
+    return list;
+  }
+  return Object.keys(myMemberships());
+}
+function myEmpId(code) {
+  const m = myMemberships()[code];
+  return m && m.empId ? String(m.empId) : '';
+}
+
+function shiftTs(shift) {
+  const d = fromYmd(shift.date);
+  const [sh, sm] = String(shift.start).split(':').map(Number);
+  const [eh, em] = String(shift.end).split(':').map(Number);
+  const start = d.getTime() + (sh || 0) * 3600000 + (sm || 0) * 60000;
+  let end = d.getTime() + (eh || 0) * 3600000 + (em || 0) * 60000;
+  if (end <= start) end += 86400000;
+  return { start, end };
+}
+
+/* Смена: доступна за 15 минут до начала и в течение суток после окончания. */
+function isCurrentShift(shift) {
+  if (!shift || !validYmd(shift.date)) return false;
+  const t = shiftTs(shift);
+  const now = Date.now();
+  return now >= t.start - 15 * 60000 && now <= t.end + 24 * 3600000;
+}
+
+/* В базу графика пишем только расписание — финансы лежат отдельно,
+   чтобы правила Firebase могли ограничить их по роли. */
+function scheduleOnly(shift) {
+  const t = shiftTs(shift);
+  return {
+    id: shift.id,
+    date: shift.date,
+    empId: shift.empId,
+    start: shift.start,
+    end: shift.end,
+    note: shift.note || '',
+    by: shift.by || '',
+    at: shift.at || 0,
+    tsStart: t.start,
+    tsEnd: t.end,
+  };
+}
+
+/* Сотрудник может вносить финансы за 15 минут до начала смены
+   и в течение суток после окончания, менеджер и админ — за любой день. */
+function canEditFinance(shift) {
+  if (!shift) return false;
+  if (isStaff()) return true;
+  return isCurrentShift(shift);
+}
+
+function normalizeProfile(raw, user) {
+  const email = emailLower(user && user.email);
+  const src = raw && raw.memberships && typeof raw.memberships === 'object' ? raw.memberships : {};
+  const memberships = {};
+  Object.keys(src).slice(0, 40).forEach((code) => {
+    const m = src[code];
+    if (!m || typeof m !== 'object') return;
+    const clean = String(code).trim().slice(0, 40);
+    if (!clean) return;
+    memberships[clean] = {
+      empId: m.empId ? String(m.empId).slice(0, 40) : '',
+      role: m.role === 'manager' ? 'manager' : 'employee',
+    };
+  });
+  let role = raw && raw.role === 'manager' ? 'manager' : (raw && raw.role === 'admin' ? 'admin' : 'employee');
+  if (ADMIN_EMAILS.indexOf(email) >= 0) role = 'admin';
+  return {
+    name: String((raw && raw.name) || (user && user.displayName) || email.split('@')[0] || 'Сотрудник').slice(0, 60),
+    email,
+    role,
+    memberships,
+  };
+}
+
+function profilePayload() {
+  if (!state.profile) return null;
+  return {
+    name: state.profile.name,
+    email: state.profile.email,
+    role: state.profile.role,
+    memberships: state.profile.memberships || {},
+    updatedAt: Date.now(),
+  };
+}
+
+async function saveProfile() {
+  if (!state.profile || !state.authUser) return;
+  state.settings.name = state.profile.name;
+  saveSettings();
+  try { LS.set('smena.profile.' + state.authUser.uid, state.profile); } catch (e) { /* ignore */ }
+  try {
+    await firebase.database().ref('users/' + state.authUser.uid).set(profilePayload());
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
 /* ---------- sync ---------- */
 
 function setSync(mode) {
@@ -693,29 +877,137 @@ function remoteRemove(path) {
   });
 }
 
-async function connectFirebase() {
-  if (!state.settings.firebase || !state.settings.teamCode) {
+async function loadFirebaseSdk() {
+  await loadScript(SDK_APP);
+  await loadScript(SDK_AUTH);
+  await loadScript(SDK_DB);
+  if (!window.firebase) throw new Error('Firebase не загрузился');
+  const cfg = state.settings.firebase;
+  if (!cfg) return;
+  if (!cfg.databaseURL && cfg.projectId) {
+    cfg.databaseURL = 'https://' + cfg.projectId + '-default-rtdb.firebaseio.com';
+  }
+  if (!cfg.databaseURL) throw new Error('В конфигурации нет databaseURL');
+  if (!firebase.apps.length) firebase.initializeApp(cfg);
+}
+
+async function initCloud() {
+  if (!state.settings.firebase) {
+    state.authReady = true;
     setSync('local');
     return;
   }
   setSync('connecting');
   try {
-    await loadScript(SDK_APP);
-    await loadScript(SDK_DB);
-    if (!window.firebase) throw new Error('Firebase не загрузился');
+    await loadFirebaseSdk();
+    auth = firebase.auth();
+    auth.onAuthStateChanged((user) => { onAuthChanged(user); });
+  } catch (e) {
+    console.error(e);
+    state.authReady = true;
+    setSync('error');
+    toast(e && e.message ? e.message : 'Ошибка подключения');
+    render();
+  }
+}
 
-    const cfg = state.settings.firebase;
-    if (!cfg.databaseURL && cfg.projectId) {
-      cfg.databaseURL = 'https://' + cfg.projectId + '-default-rtdb.firebaseio.com';
+async function onAuthChanged(user) {
+  state.authUser = user || null;
+  state.profileError = '';
+  if (!user) {
+    state.profile = null;
+    state.team = null;
+    state.teams = [];
+    state.authReady = true;
+    if (teamRef) { teamRef.off(); teamRef = null; }
+    fb = null;
+    setSync('local');
+    render();
+    return;
+  }
+  const cacheKey = 'smena.profile.' + user.uid;
+  let cached = null;
+  try { cached = LS.get(cacheKey, null); } catch (e) { cached = null; }
+  try {
+    const snap = await firebase.database().ref('users/' + user.uid).once('value');
+    const exists = snap.exists();
+    state.profile = normalizeProfile(snap.val(), user);
+    if (!exists) {
+      if (pendingRegName) state.profile.name = pendingRegName;
+      await firebase.database().ref('users/' + user.uid).set(profilePayload());
     }
-    if (!cfg.databaseURL) throw new Error('В конфигурации нет databaseURL');
+    await finishAuthFlow(cacheKey, false);
+  } catch (e) {
+    console.error(e);
+    if (cached) {
+      /* Нет сети или база недоступна — работаем на сохранённых данных. */
+      state.profile = normalizeProfile(cached, user);
+      await finishAuthFlow(cacheKey, true);
+      toast('Нет сети — показаны сохранённые данные');
+      return;
+    }
+    state.authReady = true;
+    setSync('error');
+    const denied = e && e.code === 'PERMISSION_DENIED';
+    state.profileError = denied
+      ? 'Нет доступа к профилю. В Firebase Realtime Database опубликуйте правила из файла database.rules.json — после этого войдите снова.'
+      : 'Не удалось загрузить профиль: ' + (e && e.message ? e.message : 'ошибка сети');
+    toast(denied ? 'Нужно опубликовать правила Firebase' : state.profileError);
+    render();
+  }
+}
 
-    if (!firebase.apps.length) firebase.initializeApp(cfg);
-    const db = firebase.database();
-    const ref = db.ref('teams/' + state.settings.teamCode);
-    fb = { db, ref };
-    armConnectTimeout();
+async function finishAuthFlow(cacheKey, offline) {
+  pendingRegName = '';
+  state.settings.name = state.profile.name;
+  saveSettings();
+  state.authReady = true;
+  if (cacheKey) LS.set(cacheKey, state.profile);
+  if (offline) state.teams = Object.keys(myMemberships());
+  else await loadTeamList();
+  const codes = myTeams();
+  let code = state.settings.teamCode;
+  if (!isAdmin()) {
+    code = codes.indexOf(code) >= 0 ? code : (codes[0] || '');
+  } else if (codes.length && codes.indexOf(code) < 0) {
+    code = codes[0];
+  }
+  state.settings.teamCode = code || '';
+  saveSettings();
+  render();
+  if (code) connectTeam(code);
+  else setSync('online');
+}
 
+async function loadTeamList() {
+  state.teams = [];
+  if (!state.authUser) return;
+  if (isAdmin()) {
+    try {
+      const snap = await firebase.database().ref('teams').once('value');
+      state.teams = Object.keys(snap.val() || {}).sort();
+    } catch (e) {
+      console.warn(e);
+    }
+  } else {
+    state.teams = Object.keys(myMemberships());
+  }
+}
+
+function connectTeam(code) {
+  if (!state.settings.firebase || !code || !state.authUser) {
+    setSync('local');
+    return;
+  }
+  setSync('connecting');
+  const db = firebase.database();
+  if (teamRef) teamRef.off();
+  const ref = db.ref('teams/' + code);
+  teamRef = ref;
+  fb = { db, ref, code };
+
+  if (!connectedBound) {
+    connectedBound = true;
     db.ref('.info/connected').on('value', (snap) => {
       state.connected = snap.val() === true;
       if (state.connected) {
@@ -726,41 +1018,190 @@ async function connectFirebase() {
         setSync('offline');
       }
     });
+  }
 
-    ref.on('value', (snap) => {
-      clearTimeout(connectTimer);
-      const raw = snap.val();
-      if (raw) {
-        state.team = applyFinDrafts(normalizeTeam(raw));
-        persist();
-        render();
-        setSync(state.connected ? 'online' : 'offline');
-      } else {
-        setSync(state.connected ? 'online' : 'offline');
+  armConnectTimeout();
+  ref.on('value', (snap) => {
+    clearTimeout(connectTimer);
+    const raw = snap.val();
+    if (raw) {
+      state.team = applyFinDrafts(normalizeTeam(raw));
+      if (isAdmin() && state.authUser && !state.team.members[state.authUser.uid]) {
+        const member = { name: myName(), role: 'admin', empId: '', at: Date.now() };
+        state.team.members[state.authUser.uid] = member;
+        remoteSet('members/' + state.authUser.uid, member);
+      }
+      /* Финансы из старых версий лежали внутри смены — переносим в отдельную ветку. */
+      if (isAdmin()) {
+        const rawFin = raw.fin && typeof raw.fin === 'object' ? raw.fin : {};
+        Object.keys(state.team.shifts).forEach((sid) => {
+          const sh = state.team.shifts[sid];
+          if (sh.fin && !rawFin[sid]) remoteSet('fin/' + sid, sh.fin);
+        });
+      }
+      persist();
+      render();
+      setSync(state.connected ? 'online' : 'offline');
+    } else {
+      state.team = null;
+      setSync(state.connected ? 'online' : 'offline');
+      render();
+      if (isAdmin()) {
         if (!state.promptedCreate) {
           state.promptedCreate = true;
-          state.pendingCreate = true;
-          if (state.settings.name) {
-            state.pendingCreate = false;
-            openCreateTeam();
-          } else {
-            openWelcome();
-          }
+          openCreateTeam();
         }
+      } else {
+        toast('Команда ' + code + ' не найдена');
       }
-    }, (err) => {
-      clearTimeout(connectTimer);
-      console.warn(err);
-      setSync('error');
-      toast('Ошибка синхронизации: ' + (err && err.message ? err.message : 'нет доступа'));
-      render();
-    });
-  } catch (err) {
+    }
+  }, (err) => {
     clearTimeout(connectTimer);
-    console.error(err);
+    console.warn(err);
     setSync('error');
-    toast(err && err.message ? err.message : 'Ошибка подключения');
+    state.team = null;
     render();
+    toast('Нет доступа к команде: ' + code);
+  });
+}
+
+async function doLogin(email, pass) {
+  await auth.signInWithEmailAndPassword(email, pass);
+}
+
+async function doRegister(name, email, pass) {
+  pendingRegName = name;
+  const cred = await auth.createUserWithEmailAndPassword(email, pass);
+  try { await cred.user.updateProfile({ displayName: name }); } catch (e) { /* не критично */ }
+}
+
+async function doReset(email) {
+  await auth.sendPasswordResetEmail(email);
+}
+
+async function doLogout() {
+  if (auth) await auth.signOut();
+}
+
+async function switchTeam(code) {
+  if (!code) return;
+  if (code === state.settings.teamCode) return;
+  state.settings.teamCode = code;
+  saveSettings();
+  finDrafts.clear();
+  state.team = normalizeTeam(LS.get(teamKey(), null));
+  state.promptedCreate = false;
+  state.tab = 'month';
+  render();
+  connectTeam(code);
+}
+
+async function lookupTeam(code) {
+  if (!state.settings.firebase) return;
+  if (!firebase.apps.length) await loadFirebaseSdk();
+  const clean = normalizeCode(code);
+  if (!clean) { toast('Введите код команды'); return; }
+  try {
+    const snap = await firebase.database().ref('teams/' + clean + '/employees').once('value');
+    if (!snap.exists()) {
+      if (isAdmin()) {
+        const ok = await confirmDialog('Команда не найдена', 'Создать новую команду с кодом «' + clean + '»?', 'Создать');
+        if (ok) { closeSheet(); state.settings.teamCode = clean; await createTeam(clean); }
+      } else {
+        toast('Команда с кодом ' + clean + ' не найдена');
+      }
+      return;
+    }
+    if (isAdmin()) {
+      state.joinTeam = null;
+      closeSheet();
+      if (clean === state.settings.teamCode) render();
+      else await switchTeam(clean);
+      return;
+    }
+    state.joinTeam = { code: clean, employees: snap.val() || {} };
+    render();
+  } catch (e) {
+    toast('Не удалось найти команду: ' + (e && e.message ? e.message : ''));
+  }
+}
+
+function authErrorText(code) {
+  const map = {
+    'auth/invalid-email': 'Некорректный email.',
+    'auth/user-not-found': 'Аккаунт с таким email не найден.',
+    'auth/wrong-password': 'Неверный пароль.',
+    'auth/invalid-credential': 'Неверный email или пароль.',
+    'auth/invalid-login-credentials': 'Неверный email или пароль.',
+    'auth/email-already-in-use': 'Этот email уже зарегистрирован — войдите.',
+    'auth/weak-password': 'Пароль слишком простой: нужно не меньше 6 символов.',
+    'auth/too-many-requests': 'Слишком много попыток. Подождите пару минут.',
+    'auth/network-request-failed': 'Нет связи с сервером. Проверьте интернет.',
+    'auth/operation-not-allowed': 'Вход по email выключен в Firebase. Включите Email/Password в консоли.',
+  };
+  return map[code] || 'Не удалось выполнить действие. Проверьте данные и попробуйте ещё раз.';
+}
+
+function openJoinSheet() {
+  if (!state.authUser) return;
+  openSheet(
+    '<div class="sheet-head"><div class="grow"><div class="sheet-title">Подключить команду</div>' +
+      '<div class="tiny muted">Код выдаёт администратор MrCHAO</div></div>' +
+      '<button class="icon-btn" data-action="close-modal" aria-label="Закрыть">' + IC.close + '</button></div>' +
+    '<form class="sheet-form" data-form="join-lookup">' +
+      '<div class="sheet-body">' +
+        '<label class="field"><span class="label">Код команды</span>' +
+          '<input class="input" type="text" name="code" placeholder="например, mrchao-podsolnuh" autocomplete="off" required></label>' +
+        '<p class="tiny muted">Если вы уже в команде, она появится в списке команд.</p>' +
+      '</div>' +
+      '<div class="sheet-foot"><button type="submit" class="btn primary grow">Найти команду</button></div>' +
+    '</form>'
+  );
+}
+
+function openJoinEmployeesSheet() {
+  if (!state.joinTeam) return;
+  const list = Object.keys(state.joinTeam.employees || {}).map((id) => {
+    const e = state.joinTeam.employees[id];
+    return { id, name: String(e && e.name ? e.name : 'Сотрудник') };
+  }).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  openSheet(
+    '<div class="sheet-head"><div class="grow"><div class="sheet-title">Вступить в команду</div>' +
+      '<div class="tiny muted">Код: ' + esc(state.joinTeam.code) + '</div></div>' +
+      '<button class="icon-btn" data-action="close-modal" aria-label="Закрыть">' + IC.close + '</button></div>' +
+    '<div class="sheet-body">' +
+      '<label class="field"><span class="label">Кто вы в списке сотрудников?</span>' +
+        '<select class="select-full" id="join-emp">' +
+          '<option value="">— выберите своё имя —</option>' +
+          list.map((e) => '<option value="' + esc(e.id) + '">' + esc(e.name) + '</option>').join('') +
+        '</select></label>' +
+      (list.length ? '<p class="tiny muted">Это нужно, чтобы приложение показывало ваши смены.</p>'
+        : '<p class="tiny muted">В команде пока нет сотрудников. Попросите администратора добавить вас.</p>') +
+      '<button type="button" class="btn primary block" data-action="join-confirm"' + (list.length ? '' : ' disabled') + '>Вступить</button>' +
+    '</div>'
+  );
+}
+
+async function joinTeam(code, empId) {
+  if (!state.authUser || !state.profile) return;
+  const clean = normalizeCode(code);
+  if (!clean) return;
+  try {
+    const member = { name: state.profile.name, role: 'employee', empId: empId || '', at: Date.now() };
+    await firebase.database().ref('teams/' + clean + '/members/' + state.authUser.uid).set(member);
+    state.profile.memberships[clean] = { empId: empId || '', role: 'employee' };
+    await firebase.database().ref('users/' + state.authUser.uid + '/memberships/' + clean).set({ empId: empId || '', role: 'employee' });
+    await saveProfile();
+    state.joinTeam = null;
+    state.settings.teamCode = clean;
+    saveSettings();
+    await loadTeamList();
+    render();
+    connectTeam(clean);
+    toast('Вы в команде');
+  } catch (e) {
+    console.error(e);
+    toast('Не удалось вступить: ' + (e && e.message ? e.message : ''));
   }
 }
 
@@ -782,7 +1223,7 @@ function applyTheme() {
   const dark = setting === 'dark' || (setting === 'auto' && prefersDark);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', dark ? '#0d0f16' : '#f2f4fa');
+  if (meta) meta.setAttribute('content', dark ? '#12100d' : '#f6efe3');
 }
 
 function render() {
@@ -793,29 +1234,164 @@ function render() {
     return;
   }
   pendingRender = false;
+
+  if (state.settings.firebase) {
+    if (!state.authReady) {
+      app.innerHTML = '<div class="boot-screen"><div class="boot-logo">' + IC.calendar + '</div>' +
+        '<div class="brand-name">MrCHAO</div><p class="muted">Загрузка…</p></div>';
+      return;
+    }
+    if (!state.authUser) {
+      app.innerHTML = authScreenHTML();
+      return;
+    }
+    if (!state.profile) {
+      app.innerHTML = state.profileError ? accessErrorHTML(state.profileError)
+        : '<div class="boot-screen"><p class="muted">Загрузка профиля…</p></div>';
+      return;
+    }
+    if (!state.settings.teamCode) {
+      app.innerHTML = joinScreenHTML();
+      return;
+    }
+  }
+
   app.innerHTML = headerHTML() + '<main class="main">' + mainHTML() + '</main>';
   const chip = $('.sync');
   if (chip) chip.style.setProperty('--dot', syncMeta().color);
 }
 
+function authScreenHTML() {
+  const mode = state.authMode === 'register' ? 'register' : (state.authMode === 'reset' ? 'reset' : 'login');
+  const err = state.authError;
+  const busy = state.authBusy;
+  const title = mode === 'register' ? 'Регистрация' : (mode === 'reset' ? 'Восстановление пароля' : 'Вход');
+  return '<div class="auth-wrap"><div class="auth-card">' +
+    '<div class="welcome-logo">' + IC.calendar + '</div>' +
+    '<h2>MrCHAO</h2>' +
+    '<p class="muted auth-sub">Смены и финансовый учёт</p>' +
+    (mode === 'reset' ? '' :
+      '<div class="auth-tabs">' +
+        '<button type="button" class="auth-tab' + (mode === 'login' ? ' active' : '') + '" data-action="auth-mode" data-mode="login">Вход</button>' +
+        '<button type="button" class="auth-tab' + (mode === 'register' ? ' active' : '') + '" data-action="auth-mode" data-mode="register">Регистрация</button>' +
+      '</div>') +
+    '<div class="auth-title">' + title + '</div>' +
+    (err ? '<div class="form-error show" role="alert">' + esc(err) + '</div>' : '') +
+    '<form class="auth-form" data-form="' + (mode === 'login' ? 'auth-login' : (mode === 'register' ? 'auth-register' : 'auth-reset')) + '">' +
+      (mode === 'register'
+        ? '<label class="field"><span class="label">Как вас зовут</span>' +
+          '<input class="input" type="text" name="name" maxlength="50" placeholder="Например, Артём" autocomplete="name" required></label>'
+        : '') +
+      '<label class="field"><span class="label">Email</span>' +
+        '<input class="input" type="email" name="email" placeholder="name@example.com" autocomplete="email" required></label>' +
+      (mode === 'reset' ? '' :
+        '<label class="field"><span class="label">Пароль</span>' +
+          '<input class="input" type="password" name="password" minlength="6" autocomplete="' + (mode === 'login' ? 'current-password' : 'new-password') + '" required></label>') +
+      (mode === 'register' ? '<p class="tiny muted" style="margin:-4px 0 12px">Пароль — не короче 6 символов. Он нужен только для входа в приложение.</p>' : '') +
+      '<button class="btn primary block" type="submit"' + (busy ? ' disabled' : '') + '>' +
+        (busy ? 'Подождите…' : (mode === 'login' ? 'Войти' : (mode === 'register' ? 'Создать аккаунт' : 'Отправить ссылку'))) +
+      '</button>' +
+    '</form>' +
+    (mode === 'login' ? '<button type="button" class="link-btn" data-action="auth-mode" data-mode="reset">Забыли пароль?</button>' : '') +
+    (mode === 'reset' ? '<button type="button" class="link-btn" data-action="auth-mode" data-mode="login">Вернуться ко входу</button>' : '') +
+    '<p class="tiny muted auth-foot">Доступ только для сотрудников MrCHAO.<br>Роли: сотрудник, менеджер, администратор.</p>' +
+  '</div></div>';
+}
+
+function accessErrorHTML(message) {
+  return '<div class="auth-wrap"><div class="auth-card">' +
+    '<div class="welcome-logo">' + IC.calendar + '</div>' +
+    '<h2>Нет доступа</h2>' +
+    '<p class="muted auth-sub">' + esc(message) + '</p>' +
+    '<button type="button" class="btn primary block" data-action="retry-sync">Повторить</button>' +
+    '<button type="button" class="link-btn" data-action="logout">Выйти из аккаунта</button>' +
+  '</div></div>';
+}
+
+function joinScreenHTML() {
+  if (state.joinTeam) {
+    const list = Object.keys(state.joinTeam.employees || {}).map((id) => {
+      const e = state.joinTeam.employees[id];
+      return { id, name: String(e && e.name ? e.name : 'Сотрудник') };
+    }).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    return '<div class="auth-wrap"><div class="auth-card">' +
+      '<div class="welcome-logo">' + IC.calendar + '</div>' +
+      '<h2>Вы в команде</h2>' +
+      '<p class="muted auth-sub">Код: <b style="color:var(--text)">' + esc(state.joinTeam.code) + '</b></p>' +
+      '<form class="auth-form" data-form="join-team">' +
+        '<label class="field"><span class="label">Кто вы в списке сотрудников?</span>' +
+          '<select class="select-full" name="empId" required>' +
+            '<option value="">— выберите своё имя —</option>' +
+            list.map((e) => '<option value="' + esc(e.id) + '">' + esc(e.name) + '</option>').join('') +
+          '</select></label>' +
+        (list.length ? '' : '<p class="tiny muted" style="margin:-4px 0 12px">В команде пока нет сотрудников. Попросите администратора добавить вас в разделе «Команда».</p>') +
+        '<button class="btn primary block" type="submit"' + (list.length ? '' : ' disabled') + '>Вступить в команду</button>' +
+      '</form>' +
+      '<button type="button" class="link-btn" data-action="join-back">Другая команда</button>' +
+    '</div></div>';
+  }
+
+  return '<div class="auth-wrap"><div class="auth-card">' +
+    '<div class="welcome-logo">' + IC.calendar + '</div>' +
+    '<h2>MrCHAO</h2>' +
+    '<p class="muted auth-sub">Введите код команды, чтобы подключиться</p>' +
+    (state.authError ? '<div class="form-error show" role="alert">' + esc(state.authError) + '</div>' : '') +
+    '<form class="auth-form" data-form="join-lookup">' +
+      '<label class="field"><span class="label">Код команды</span>' +
+        '<input class="input" type="text" name="code" placeholder="например, mrchao-podsolnuh" autocomplete="off" required></label>' +
+      '<button class="btn primary block" type="submit">Найти команду</button>' +
+    '</form>' +
+    (isAdmin() ? '<button type="button" class="link-btn" data-action="join-create">Создать новую команду с этим кодом</button>' : '') +
+    '<p class="tiny muted auth-foot">Код команды выдаёт администратор MrCHAO.</p>' +
+    '<button type="button" class="link-btn" data-action="logout">Выйти из аккаунта</button>' +
+  '</div></div>';
+}
+
+function openTeamSwitcher() {
+  const codes = myTeams();
+  const items = codes.map((code) => {
+    const cached = LS.get('smena.team.' + code, null);
+    const name = cached && cached.name ? cached.name : code;
+    const meta = myMemberships()[code];
+    const role = isAdmin() ? 'админ' : (meta && meta.role === 'manager' ? 'менеджер' : 'сотрудник');
+    return '<button type="button" class="team-item' + (code === state.settings.teamCode ? ' active' : '') + '" data-action="switch-team" data-code="' + esc(code) + '">' +
+      '<span class="team-item-name">' + esc(name) + '</span>' +
+      '<span class="team-item-meta">' + esc(code) + ' · ' + role + '</span>' +
+    '</button>';
+  }).join('');
+  openSheet(
+    '<div class="sheet-head"><div class="grow"><div class="sheet-title">Команды</div>' +
+      '<div class="tiny muted">' + (isAdmin() ? 'Доступны все команды' : 'Ваши команды') + '</div></div>' +
+      '<button class="icon-btn" data-action="close-modal" aria-label="Закрыть">' + IC.close + '</button></div>' +
+    '<div class="sheet-body">' +
+      (items || '<div class="empty">Пока нет команд</div>') +
+      '<button type="button" class="btn block" data-action="open-join" style="margin-top:12px">' + IC.plus + ' Подключить другую команду</button>' +
+    '</div>'
+  );
+}
+
 function headerHTML() {
   const meta = syncMeta();
-  const initial = (state.settings.name || '?').trim().charAt(0).toUpperCase() || '?';
+  const initial = (myName() || '?').trim().charAt(0).toUpperCase() || '?';
   const teamName = state.team && state.team.name ? state.team.name : 'график работы';
+  const teamsCount = myTeams().length;
   return '' +
     '<header class="top">' +
       '<div class="brand">' +
         '<div class="logo" aria-hidden="true">' + IC.calendar + '</div>' +
         '<div class="brand-text">' +
-          '<div class="brand-name">Смена</div>' +
+          '<div class="brand-name">MrCHAO</div>' +
           '<div class="brand-sub">' + esc(teamName) + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="top-actions">' +
+        (teamsCount > 1 || isAdmin()
+          ? '<button class="icon-btn" data-action="teams" title="Команды" aria-label="Команды">' + IC.layers + '</button>'
+          : '') +
         '<button class="sync" data-action="open-settings" style="--dot:' + meta.color + '" title="Настройки синхронизации">' +
           '<span class="sync-dot"></span><span class="sync-text">' + meta.label + '</span>' +
         '</button>' +
-        '<button class="avatar" data-action="open-settings" title="Настройки">' + esc(initial) + '</button>' +
+        '<button class="avatar" data-action="open-settings" title="' + esc(myName() + ' · ' + ROLE_LABEL[myRole()]) + '">' + esc(initial) + '</button>' +
       '</div>' +
     '</header>' +
     '<nav class="tabs">' +
@@ -993,14 +1569,14 @@ function viewTeam() {
           '<span class="dot" style="background:' + e.color + '"></span>' +
           '<div class="emp-info"><div class="emp-name">' + esc(e.name) + '</div>' +
           '<div class="tiny muted">' + fmtDuration(st.mins) + ' · ' + st.count + ' ' + plural(st.count, ['смена', 'смены', 'смен']) + '</div></div>' +
-          '<button class="icon-btn" data-action="edit-employee" data-id="' + e.id + '" aria-label="Изменить">' + IC.edit + '</button>' +
+          (isStaff() ? '<button class="icon-btn" data-action="edit-employee" data-id="' + e.id + '" aria-label="Изменить">' + IC.edit + '</button>' : '') +
         '</div>';
       }).join('') + '</div>'
     : '<div class="empty">Сотрудников пока нет. Добавьте первого — и можно ставить смены.</div>';
 
   return codeCard +
     '<div class="section-head"><h2>Сотрудники</h2>' +
-      '<button class="btn primary sm" data-action="new-employee">' + IC.plus + ' Добавить</button>' +
+      (isStaff() ? '<button class="btn primary sm" data-action="new-employee">' + IC.plus + ' Добавить</button>' : '') +
     '</div>' + cards;
 }
 
@@ -1029,14 +1605,21 @@ function finTableCell(shift, col) {
   const auto = col.calc ? finCalcFromValues(vals, col) : '';
   const ph = !has && auto !== '' ? 'авто: ' + fmtMoney(auto) : '';
   const numeric = col.type === 'money' || col.type === 'number';
+  const editable = canEditFinance(shift);
+  const meta = shift.fin && shift.fin.meta ? shift.fin.meta[col.id] : null;
+  const mark = meta
+    ? '<span class="fin-mark" title="Изменено менеджером: ' + esc(meta.by || '') + ' · ' + esc(fmtDateTime(meta.at)) + '">M</span>'
+    : '';
   return '<td class="fin-td' + (numeric ? ' num' : '') + '">' +
-    '<input class="fin-input' + (!has && col.calc ? ' is-auto' : '') + '"' +
+    '<input class="fin-input' + (!has && col.calc ? ' is-auto' : '') + (editable ? '' : ' is-locked') + '"' +
       (col.id === 'point' ? ' list="fin-points"' : '') +
       ' data-fin-shift="' + shift.id + '" data-fin-col="' + col.id + '" data-fin-field="' + col.id + '"' +
       ' value="' + esc(has ? raw : '') + '"' +
       (ph ? ' placeholder="' + esc(ph) + '"' : '') +
+      (editable ? '' : ' readonly title="Сотрудник может менять данные до истечения суток после смены"') +
       ' inputmode="' + (numeric ? 'decimal' : 'text') + '"' +
       ' aria-label="' + esc(col.title) + '">' +
+    mark +
   '</td>';
 }
 
@@ -1061,7 +1644,7 @@ function viewFinance() {
 
   const head = '<div class="section-head"><h2>' + esc(fin.title) + '</h2>' +
     '<div class="export-row">' +
-      '<button class="btn ghost sm" data-action="finance-settings">Настроить колонки</button>' +
+      (isStaff() ? '<button class="btn ghost sm" data-action="finance-settings">Настроить колонки</button>' : '') +
       '<button class="btn ghost sm" data-action="export-csv">' + IC.download + ' CSV</button>' +
     '</div></div>';
 
@@ -1091,7 +1674,10 @@ function viewFinance() {
         '<tfoot><tr>' + foot + '<td class="fin-ops"></td></tr></tfoot>' +
       '</table>' +
     '</div>' +
-    '<p class="tiny muted" style="margin-top:10px">Безнал = Выручка − Наличные. Остаток в кассе = Наличные − Инкассация; размен в остатке не учитывается. Любое значение можно переписать вручную — очистите поле, чтобы вернуть авторасчёт.</p>';
+    '<p class="tiny muted" style="margin-top:10px">Безнал = Выручка − Наличные. Остаток в кассе = Наличные − Инкассация; размен в остатке не учитывается. Любое значение можно переписать вручную — очистите поле, чтобы вернуть авторасчёт.' +
+      (!isStaff() ? '<br><b>Сотрудник</b> может вносить данные за 15 минут до начала смены и в течение суток после её окончания.' : '') +
+      (isManager() ? '<br>Правки менеджера отмечаются значком <span class="fin-mark">M</span>; наведите на него, чтобы увидеть автора и время.' : '') +
+    '</p>';
 }
 
 function finColRow(c) {
@@ -1148,6 +1734,7 @@ function openFinanceSettings() {
 }
 
 function saveFinanceFromForm(form) {
+  if (!isStaff()) { showFormError(form, 'Настройка колонок доступна менеджеру и администратору.'); return; }
   const title = String(form.elements.title.value || '').trim().slice(0, 60) || 'Финансовый учёт';
   const prev = (state.team && state.team.finance) || normalizeFinance(null);
   const byId = {};
@@ -1369,13 +1956,20 @@ function finFieldHTML(shift, col) {
   const auto = col.calc ? finCalcFromValues(vals, col) : '';
   const ph = !has && auto !== '' ? 'авто: ' + fmtMoney(auto) : '';
   const numeric = col.type === 'money' || col.type === 'number';
-  return '<label class="field fin-field"><span class="label">' + esc(col.title) + '</span>' +
-    '<input class="input' + (!has && col.calc ? ' is-auto' : '') + '"' +
+  const editable = canEditFinance(shift);
+  const meta = shift.fin && shift.fin.meta ? shift.fin.meta[col.id] : null;
+  const mark = meta
+    ? ' <span class="fin-mark" title="Изменено менеджером: ' + esc(meta.by || '') + ' · ' + esc(fmtDateTime(meta.at)) + '">M</span>'
+    : '';
+  return '<label class="field fin-field"><span class="label">' + esc(col.title) + mark +
+      (editable ? '' : ' <span class="tiny muted">(смена и сутки после)</span>') + '</span>' +
+    '<input class="input' + (!has && col.calc ? ' is-auto' : '') + (editable ? '' : ' is-locked') + '"' +
       ' data-fin-field="' + col.id + '"' + (col.calc ? ' data-fin-calc="1"' : '') +
       ' data-auto="' + (!has && col.calc ? '1' : '0') + '"' +
       (col.id === 'point' ? ' list="fin-points"' : '') +
       ' value="' + esc(has ? raw : '') + '"' +
       (ph ? ' placeholder="' + esc(ph) + '"' : '') +
+      (editable ? '' : ' readonly') +
       ' inputmode="' + (numeric ? 'decimal' : 'text') + '">' +
   '</label>';
 }
@@ -1519,17 +2113,28 @@ async function saveShiftFromForm(form) {
   /* Финансовый учёт: сохраняем только заполненные поля.
      Значения для скрытых/удалённых колонок не трогаем. */
   const existingShift = state.team.shifts[id];
-  const finVals = Object.assign({}, finValues(existingShift));
+  const existingVals = finValues(existingShift);
+  const existingMeta = (existingShift && existingShift.fin && existingShift.fin.meta) || {};
+  const finVals = Object.assign({}, existingVals);
+  const finMeta = Object.assign({}, existingMeta);
   form.querySelectorAll('[data-fin-field]').forEach((inp) => {
     const colId = inp.dataset.finField;
     const col = finColumnById(colId);
     if (!col) return;
     const val = String(inp.value || '').trim().slice(0, 200);
     const isAutoCalc = col.calc && inp.dataset.auto === '1';
-    if (isAutoCalc || !val) delete finVals[colId];
-    else finVals[colId] = val;
+    const next = isAutoCalc || !val ? '' : val;
+    const prev = existingVals[colId] || '';
+    if (next) finVals[colId] = next;
+    else delete finVals[colId];
+    if (next !== prev) {
+      if (isManager()) finMeta[colId] = { by: myName(), at: Date.now(), role: 'manager' };
+      else if (isAdmin()) delete finMeta[colId];
+    }
   });
-  if (Object.keys(finVals).length) candidate.fin = { values: finVals };
+  const nextFin = { values: finVals };
+  if (Object.keys(finMeta).length) nextFin.meta = finMeta;
+  candidate.fin = (Object.keys(finVals).length || Object.keys(finMeta).length) ? nextFin : null;
 
   const clash = shiftsOf(date).find((s) => s.id !== id && s.empId === empId && overlaps(candidate, s));
   if (clash) {
@@ -1538,13 +2143,14 @@ async function saveShiftFromForm(form) {
 
   const isNew = !state.team.shifts[id];
   const shift = Object.assign({}, candidate, {
-    by: state.settings.name || 'Гость',
+    by: myName(),
     at: Date.now(),
   });
 
   state.team.shifts[id] = shift;
   persist();
-  remoteSet('shifts/' + id, shift);
+  remoteSet('shifts/' + id, scheduleOnly(shift));
+  if (isStaff() || canEditFinance(shift)) remoteSet('fin/' + id, shift.fin || null);
   logEntry(isNew ? 'Добавлена смена' : 'Смена изменена',
     emp.name + ', ' + fmtDay(date) + ', ' + shift.start + '–' + shift.end);
 
@@ -1564,6 +2170,7 @@ async function deleteShift(id) {
   delete state.team.shifts[id];
   persist();
   remoteRemove('shifts/' + id);
+  if (isStaff() || canEditFinance(shift)) remoteRemove('fin/' + id);
   logEntry('Удалена смена', (emp ? emp.name : 'Сотрудник') + ', ' + fmtDay(shift.date) + ', ' + shift.start + '–' + shift.end);
   if (state.openDate) openDay(state.openDate);
   render();
@@ -1614,6 +2221,7 @@ function openEmployeeForm(id) {
 }
 
 function saveEmployeeFromForm(form) {
+  if (!isStaff()) return showFormError(form, 'Менять список сотрудников может менеджер или администратор.');
   const fd = new FormData(form);
   const name = String(fd.get('empName') || '').trim();
   const color = String(fd.get('color') || COLORS[0]);
@@ -1633,6 +2241,7 @@ function saveEmployeeFromForm(form) {
 }
 
 async function deleteEmployee(id) {
+  if (!isStaff()) { toast('Удалять сотрудников может менеджер или администратор'); return; }
   const emp = state.team && state.team.employees ? state.team.employees[id] : null;
   if (!emp) return;
   const count = Object.values(state.team.shifts || {}).filter((s) => s.empId === id).length;
@@ -1645,6 +2254,7 @@ async function deleteEmployee(id) {
     if (state.team.shifts[sid].empId === id) {
       delete state.team.shifts[sid];
       remoteRemove('shifts/' + sid);
+      remoteRemove('fin/' + sid);
     }
   });
   persist();
@@ -1657,9 +2267,109 @@ async function deleteEmployee(id) {
 
 /* ---------- settings ---------- */
 
+function teamSettingsHTML() {
+  const s = state.settings;
+  const teams = myTeams();
+  const teamOptions = teams.map((code) => {
+    const cached = LS.get('smena.team.' + code, null);
+    const nm = cached && cached.name ? cached.name : code;
+    return '<option value="' + esc(code) + '"' + (code === s.teamCode ? ' selected' : '') + '>' + esc(nm) + ' · ' + esc(code) + '</option>';
+  }).join('');
+  const members = state.team && state.team.members
+    ? Object.keys(state.team.members).map((uid) => Object.assign({ uid }, state.team.members[uid]))
+    : [];
+  const emps = empList();
+  const rows = isAdmin() ? members.map((m) => {
+    const empOpts = '<option value="">— не привязан —</option>' + emps.map((e) =>
+      '<option value="' + esc(e.id) + '"' + (e.id === m.empId ? ' selected' : '') + '>' + esc(e.name) + '</option>'
+    ).join('');
+    const self = state.authUser && m.uid === state.authUser.uid;
+    return '<div class="member-row">' +
+      '<div class="member-head">' +
+        '<span class="member-name">' + esc(m.name || 'Без имени') + '</span>' +
+        '<span class="role-badge role-' + esc(m.role || 'employee') + '">' +
+          (m.role === 'admin' ? 'админ' : (m.role === 'manager' ? 'менеджер' : 'сотрудник')) + '</span>' +
+      '</div>' +
+      (m.role === 'admin' || self
+        ? '<div class="tiny muted">' + (self ? 'Это вы' : 'Полный доступ') + '</div>'
+        : '<div class="member-controls">' +
+            '<select class="select" data-member-role="' + esc(m.uid) + '" aria-label="Роль">' +
+              '<option value="employee"' + (m.role === 'employee' ? ' selected' : '') + '>Сотрудник</option>' +
+              '<option value="manager"' + (m.role === 'manager' ? ' selected' : '') + '>Менеджер</option>' +
+            '</select>' +
+            '<select class="select" data-member-emp="' + esc(m.uid) + '" aria-label="Сотрудник">' + empOpts + '</select>' +
+          '</div>') +
+    '</div>';
+  }).join('') : '';
+
+  return '<div class="settings-section">' +
+    '<h3>Команда</h3>' +
+    '<div class="status-line"><span class="sync-dot" style="--dot:' + syncMeta().color + '"></span>' + syncMeta().label + '</div>' +
+    (teams.length > 1
+      ? '<label class="field"><span class="label">Активная команда</span>' +
+          '<select class="select-full" data-team-switch>' + teamOptions + '</select></label>'
+      : '') +
+    (isStaff()
+      ? '<label class="field"><span class="label">Название команды</span>' +
+          '<input class="input" type="text" name="teamName" maxlength="50" value="' +
+            esc(state.team ? state.team.name : '') + '" placeholder="Например, MrCHAO Подсолнух"></label>'
+      : '') +
+    '<div class="status-line">Код: <b style="color:var(--text)">' + esc(s.teamCode) + '</b></div>' +
+    '<div class="export-row" style="margin-bottom:14px">' +
+      '<button type="button" class="btn sm" data-action="copy-code">Скопировать код</button>' +
+      '<button type="button" class="btn sm" data-action="open-join">Подключить команду</button>' +
+    '</div>' +
+    (isAdmin()
+      ? '<h4 class="settings-sub">Участники и роли</h4>' +
+        (rows || '<div class="empty">Пока никто не подключился</div>') +
+        '<p class="tiny muted" style="margin-top:8px">Менеджер видит график своих команд и может менять финансы за любой день. Сотрудник — за 15 минут до начала смены и в течение суток после её окончания.</p>'
+      : '') +
+  '</div>';
+}
+
+async function setMemberRole(uid, role) {
+  if (!isAdmin() || !uid) return;
+  const code = state.settings.teamCode;
+  if (!code) return;
+  try {
+    await firebase.database().ref('teams/' + code + '/members/' + uid).update({ role });
+    const snap = await firebase.database().ref('users/' + uid).once('value');
+    const prof = snap.val() || {};
+    const memberships = prof.memberships || {};
+    if (memberships[code]) memberships[code].role = role === 'manager' ? 'manager' : 'employee';
+    const anyManager = Object.keys(memberships).some((key) => memberships[key] && memberships[key].role === 'manager');
+    const nextRole = prof.role === 'admin' ? 'admin' : (anyManager ? 'manager' : 'employee');
+    await firebase.database().ref('users/' + uid).update({ memberships, role: nextRole });
+    if (state.team && state.team.members[uid]) state.team.members[uid].role = role;
+    persist();
+    toast('Роль обновлена');
+    openSettings();
+  } catch (e) {
+    console.error(e);
+    toast('Не удалось изменить роль: ' + (e && e.message ? e.message : ''));
+  }
+}
+
+async function setMemberEmp(uid, empId) {
+  if (!isAdmin() || !uid) return;
+  const code = state.settings.teamCode;
+  if (!code) return;
+  try {
+    await firebase.database().ref('teams/' + code + '/members/' + uid).update({ empId: empId || '' });
+    await firebase.database().ref('users/' + uid + '/memberships/' + code).update({ empId: empId || '' });
+    if (state.team && state.team.members[uid]) state.team.members[uid].empId = empId || '';
+    persist();
+    toast('Привязка обновлена');
+  } catch (e) {
+    console.error(e);
+    toast('Не удалось обновить привязку: ' + (e && e.message ? e.message : ''));
+  }
+}
+
 function openSettings() {
   const s = state.settings;
   const meta = syncMeta();
+  const role = ROLE_LABEL[myRole()];
   const fbText = s.firebase ? JSON.stringify(s.firebase, null, 2) : '';
 
   openSheet(
@@ -1673,9 +2383,15 @@ function openSettings() {
         '<div class="form-error" data-error></div>' +
 
         '<div class="settings-section">' +
+          '<h3>Аккаунт</h3>' +
+          '<div class="status-line"><b style="color:var(--text)">' + esc(myEmail()) + '</b> · ' + esc(role) + '</div>' +
+          '<button type="button" class="btn sm" data-action="logout">Выйти из аккаунта</button>' +
+        '</div>' +
+
+        '<div class="settings-section">' +
           '<h3>Вы</h3>' +
           '<label class="field"><span class="label">Ваше имя (для истории изменений)</span>' +
-            '<input class="input" type="text" name="name" maxlength="30" value="' + esc(s.name) + '" placeholder="Например, Анна"></label>' +
+            '<input class="input" type="text" name="name" maxlength="60" value="' + esc(myName()) + '" placeholder="Например, Анна"></label>' +
           '<label class="field"><span class="label">Оформление</span>' +
             '<select class="select-full" name="theme">' +
               '<option value="auto"' + (s.theme === 'auto' ? ' selected' : '') + '>Как в системе</option>' +
@@ -1684,34 +2400,7 @@ function openSettings() {
             '</select></label>' +
         '</div>' +
 
-        '<div class="settings-section">' +
-          '<h3>Команда и синхронизация</h3>' +
-          '<div class="status-line"><span class="sync-dot" style="--dot:' + meta.color + '"></span>' + meta.label +
-            (s.teamCode ? ' · код: <b style="color:var(--text)">' + esc(s.teamCode) + '</b>' : '') + '</div>' +
-          '<label class="field"><span class="label">Название команды</span>' +
-            '<input class="input" type="text" name="teamName" maxlength="50" value="' + esc(state.team ? state.team.name : '') + '" placeholder="Например, Магазин на Ленина"></label>' +
-          '<label class="field"><span class="label">Код команды</span>' +
-            '<input class="input" type="text" name="teamCode" maxlength="40" value="' + esc(s.teamCode) + '" placeholder="например, magazin-7"></label>' +
-          '<p class="tiny muted" style="margin:-6px 0 14px">У всех сотрудников должен быть одинаковый код и одинаковый Firebase.</p>' +
-          '<label class="field"><span class="label">Конфигурация Firebase (для синхронизации)</span>' +
-            '<textarea class="input" name="firebase" spellcheck="false" placeholder=\'{"apiKey":"...","databaseURL":"https://...firebasedatabase.app", ...}\'>' + esc(fbText) + '</textarea></label>' +
-          '<p class="tiny muted" style="margin:-6px 0 14px">Можно вставить весь код, который показывает Firebase, — приложение само найдёт в нём настройки. Главное, чтобы в конфигурации был <code>databaseURL</code>.</p>' +
-          '<details class="help"><summary>Как включить синхронизацию (бесплатно)</summary>' +            '<div class="help-body">' +
-              '<ol>' +
-                '<li>Откройте <code>console.firebase.google.com</code> и создайте проект (тариф Spark — бесплатно).</li>' +
-                '<li>В меню проекта: <code>Build → Realtime Database → Create Database</code>. Регион — любой, режим — <code>Start in test mode</code>.</li>' +
-                '<li>Нажмите шестерёнку → <code>Project settings → Your apps → Web (</>)</code>, зарегистрируйте приложение и скопируйте объект <code>firebaseConfig</code>.</li>' +
-                '<li>Вставьте этот объект в поле выше, придумайте код команды и нажмите «Сохранить».</li>' +
-                '<li>В Realtime Database откройте <code>Rules</code>, вставьте правила ниже и нажмите <code>Publish</code>:</li>' +
-              '</ol>' +
-              '<code>{"rules":{"teams":{"$team":{".read":true,".write":true}}}}</code>' +
-              '<p style="margin-top:10px"><b>Важно:</b> тестовый режим Firebase закрывает доступ через 30 дней. Обязательно замените правила на указанные выше и нажмите <code>Publish</code>.</p>' +
-              '<p style="margin-top:10px">Код команды — это фактически пароль: кто его знает, тот может смотреть и менять график. Для небольшой команды этого достаточно.</p>' +
-              '<p>Чтобы не вводить настройки на каждом устройстве, их можно прописать один раз в файле <code>config.js</code> перед публикацией сайта.</p>' +
-            '</div>' +
-          '</details>' +
-          (s.firebase ? '<button type="button" class="btn danger sm" data-action="disconnect-sync" style="margin-top:12px">Отключить синхронизацию</button>' : '') +
-        '</div>' +
+        teamSettingsHTML() +
 
         '<div class="settings-section">' +
           '<h3>Данные</h3>' +
@@ -1832,42 +2521,22 @@ function parseFirebase(text) {
 
 function saveSettingsFromForm(form) {
   const fd = new FormData(form);
-  const name = String(fd.get('name') || '').trim().slice(0, 30);
+  const name = String(fd.get('name') || '').trim().slice(0, 60);
   const teamName = String(fd.get('teamName') || '').trim().slice(0, 50);
-  const teamCode = normalizeCode(fd.get('teamCode'));
   const theme = String(fd.get('theme') || 'auto');
-  let firebase = null;
-  const fbRaw = String(fd.get('firebase') || '').trim();
 
-  if (fbRaw) {
-    try {
-      firebase = parseFirebase(fbRaw);
-    } catch (e) {
-      return showFormError(form, e.message);
-    }
-    if (!teamCode) return showFormError(form, 'Придумайте код команды — он нужен для синхронизации.');
+  if (teamName && state.team && teamName !== state.team.name && !isStaff()) {
+    return showFormError(form, 'Менять название команды может менеджер или администратор.');
   }
 
-  if (!firebase && fbRaw) return showFormError(form, 'Проверьте конфигурацию Firebase.');
-
-  const prev = state.settings;
-  const syncChanged = (prev.teamCode || '') !== teamCode || !sameFirebase(prev.firebase, firebase);
-
-  if (!firebase && prev.teamCode !== teamCode) {
-    const oldTeam = LS.get('smena.team.' + (prev.teamCode || 'local'), null);
-    if (oldTeam) LS.set('smena.team.' + (teamCode || 'local'), oldTeam);
-  }
-
-  if (firebase && teamCode && !prev.firebase) {
-    const newKey = 'smena.team.' + teamCode;
-    if (!LS.get(newKey, null)) {
-      const localTeam = LS.get('smena.team.local', null);
-      if (localTeam) LS.set(newKey, localTeam);
+  state.settings.theme = theme;
+  if (name) {
+    state.settings.name = name;
+    if (state.profile) {
+      state.profile.name = name;
+      saveProfile();
     }
   }
-
-  const syncDisabled = firebase ? false : (prev.firebase ? true : !!prev.syncDisabled);
-  state.settings = Object.assign({}, prev, { name, teamCode, firebase, theme, syncDisabled });
   saveSettings();
   applyTheme();
 
@@ -1875,16 +2544,12 @@ function saveSettingsFromForm(form) {
     state.team.name = teamName;
     persist();
     remoteSet('name', teamName);
+    logEntry('Название команды изменено', '«' + teamName + '»');
   }
 
   closeSheet();
   render();
-
-  if (syncChanged) {
-    location.reload();
-  } else {
-    toast('Настройки сохранены');
-  }
+  toast('Настройки сохранены');
 }
 
 /* ---------- welcome / create team ---------- */
@@ -1893,8 +2558,8 @@ function openWelcome() {
   openSheet(
     '<div class="sheet-body welcome">' +
       '<div class="welcome-logo">' + IC.calendar + '</div>' +
-      '<h2>Добро пожаловать в «Смену»</h2>' +
-      '<p class="muted">Совместный график работы. Стандартная смена 10:00–21:00 или разделённая на двоих.</p>' +
+      '<h2>MrCHAO — вход в смены</h2>' +
+      '<p class="muted">График работы и финансовый учёт MrCHAO. Стандартная смена 10:00–21:00 или разделённая на двоих.</p>' +
       '<form data-form="welcome">' +
         '<label class="field"><span class="label">Как вас зовут?</span>' +
           '<input class="input" type="text" name="name" maxlength="30" placeholder="Например, Анна" autocomplete="given-name" required></label>' +
@@ -1908,7 +2573,7 @@ function openWelcome() {
 }
 
 function openCreateTeam() {
-  if (!state.settings.name) { openWelcome(); return; }
+  if (!isAdmin()) return;
   const hasLocal = state.team && (Object.keys(state.team.employees || {}).length || Object.keys(state.team.shifts || {}).length);
   openSheet(
     '<div class="sheet-head"><div class="grow"><div class="sheet-title">Команда не найдена</div>' +
@@ -1918,29 +2583,41 @@ function openCreateTeam() {
       '<p class="muted" style="margin-bottom:16px">В облаке пока нет команды с таким кодом. Создать её? ' +
         (hasLocal ? 'Данные с этого устройства будут загружены в облако.' : '') + '</p>' +
       '<button class="btn primary block" data-action="create-team" style="margin-bottom:8px">Создать команду ' + esc(state.settings.teamCode) + '</button>' +
-      '<button class="btn block" data-action="open-settings">Изменить код / настройки</button>' +
+      '<button class="btn block" data-action="open-join">Подключиться к другой команде</button>' +
     '</div>'
   );
 }
 
-async function createTeam() {
-  if (!fb) return;
-  const local = state.team;
-  const hasData = local && (Object.keys(local.employees || {}).length || Object.keys(local.shifts || {}).length);
-  const team = hasData ? local : {
-    name: 'Моя команда',
-    employees: {},
-    shifts: {},
-    log: {},
-    finance: normalizeFinance(null),
-    createdAt: Date.now(),
-  };
+async function createTeam(codeOverride) {
+  if (!isAdmin()) { toast('Создавать команды может только администратор'); return; }
+  if (!state.settings.firebase || !state.authUser) return;
+  const code = normalizeCode(codeOverride || state.settings.teamCode);
+  if (!code) { toast('Введите код команды'); return; }
+  if (!firebase.apps.length) await loadFirebaseSdk();
+  if (!state.team) {
+    state.team = {
+      name: '',
+      employees: {},
+      shifts: {},
+      log: {},
+      members: {},
+      finance: normalizeFinance(null),
+      createdAt: Date.now(),
+    };
+  }
+  const team = state.team;
+  team.name = team.name || ('MrCHAO ' + code);
+  team.members = team.members || {};
+  team.members[state.authUser.uid] = { name: myName(), role: 'admin', empId: '', at: Date.now() };
   try {
-    await fb.ref.set(team);
+    await firebase.database().ref('teams/' + code).set(team);
+    state.settings.teamCode = code;
+    saveSettings();
     state.team = team;
     persist();
     closeSheet();
     render();
+    connectTeam(code);
     toast('Команда создана');
   } catch (e) {
     console.error(e);
@@ -2042,6 +2719,58 @@ function logEntry(action, details) {
   remoteSet('log/' + id, entry);
 }
 
+async function handleAuthSubmit(kind, form) {
+  const fd = new FormData(form);
+  const email = String(fd.get('email') || '').trim();
+  const password = String(fd.get('password') || '');
+  const name = String(fd.get('name') || '').trim();
+  state.authError = '';
+  if (kind === 'auth-register' && !name) {
+    state.authError = 'Введите имя.';
+    render();
+    return;
+  }
+  state.authBusy = true;
+  render();
+  try {
+    if (kind === 'auth-login') {
+      await doLogin(email, password);
+    } else if (kind === 'auth-register') {
+      await doRegister(name, email, password);
+    } else {
+      await doReset(email);
+      state.authMode = 'login';
+      toast('Ссылка для восстановления отправлена на ' + email);
+    }
+  } catch (e) {
+    console.error(e);
+    state.authError = authErrorText(e && e.code);
+  } finally {
+    state.authBusy = false;
+    render();
+  }
+}
+
+async function confirmJoin() {
+  if (!state.joinTeam) return;
+  const sel = $('#join-emp') || $('#app select[name="empId"]');
+  const empId = sel ? sel.value : '';
+  if (!empId) { toast('Выберите своё имя в списке'); return; }
+  await joinTeam(state.joinTeam.code, empId);
+}
+
+async function handleJoinLookup(form) {
+  const fd = new FormData(form);
+  const code = normalizeCode(fd.get('code'));
+  if (!code) return showFormError(form, 'Введите код команды.');
+  state.authError = '';
+  await lookupTeam(code);
+  if (state.joinTeam) {
+    if (state.settings.teamCode) openJoinEmployeesSheet();
+    else render();
+  }
+}
+
 /* ---------- events ---------- */
 
 async function handleAction(action, el, ev) {
@@ -2086,12 +2815,15 @@ async function handleAction(action, el, ev) {
       break;
     }
     case 'new-employee':
+      if (!isStaff()) { toast('Добавлять сотрудников может менеджер или администратор'); break; }
       openEmployeeForm();
       break;
     case 'edit-employee':
+      if (!isStaff()) { toast('Менять список сотрудников может менеджер или администратор'); break; }
       openEmployeeForm(el.dataset.id);
       break;
     case 'delete-employee':
+      if (!isStaff()) { toast('Удалять сотрудников может менеджер или администратор'); break; }
       await deleteEmployee(el.dataset.id);
       break;
     case 'pick-color': {
@@ -2103,6 +2835,41 @@ async function handleAction(action, el, ev) {
     }
     case 'open-settings':
       openSettings();
+      break;
+    case 'teams':
+      openTeamSwitcher();
+      break;
+    case 'switch-team':
+      closeSheet();
+      await switchTeam(el.dataset.code);
+      break;
+    case 'auth-mode':
+      state.authMode = el.dataset.mode || 'login';
+      state.authError = '';
+      render();
+      break;
+    case 'logout': {
+      const ok = await confirmDialog('Выйти из аккаунта?', 'Данные команды останутся в облаке. Чтобы вернуться, снова войдите по email.', 'Выйти');
+      if (ok) { closeSheet(); await doLogout(); }
+      break;
+    }
+    case 'join-back':
+      state.joinTeam = null;
+      state.authError = '';
+      render();
+      break;
+    case 'join-create': {
+      const inp = $('#app input[name="code"]');
+      const code = inp ? inp.value : '';
+      if (!normalizeCode(code)) { toast('Введите код команды'); break; }
+      await createTeam(code);
+      break;
+    }
+    case 'open-join':
+      openJoinSheet();
+      break;
+    case 'join-confirm':
+      await confirmJoin();
       break;
     case 'close-modal':
       closeSheet();
@@ -2136,6 +2903,7 @@ async function handleAction(action, el, ev) {
       break;
     }
     case 'finance-settings':
+      if (!isStaff()) { toast('Настройка колонок доступна менеджеру и администратору'); break; }
       openFinanceSettings();
       break;
     case 'fin-col-add': {
@@ -2220,13 +2988,54 @@ document.addEventListener('input', (e) => {
   const col = finColumnById(inp.dataset.finCol);
   if (!col) return;
 
+  if (!canEditFinance(shift)) {
+    inp.value = finValue(shift, col) || '';
+    toast('Сотрудник может менять данные за 15 минут до начала смены и в течение суток после её окончания');
+    return;
+  }
+
+  const val = String(inp.value || '').trim();
   setFinValue(shift, col.id, inp.value);
   setFinDraft(shiftId, col.id, inp.value);
-  if (col.calc) inp.classList.toggle('is-auto', !String(inp.value || '').trim());
+
+  if (isManager()) {
+    if (val) {
+      if (!shift.fin) shift.fin = { values: {} };
+      shift.fin.meta = shift.fin.meta || {};
+      shift.fin.meta[col.id] = { by: myName(), at: Date.now(), role: 'manager' };
+    } else if (shift.fin && shift.fin.meta) {
+      delete shift.fin.meta[col.id];
+      if (!Object.keys(shift.fin.meta).length) delete shift.fin.meta;
+    }
+  } else if (isAdmin() && shift.fin && shift.fin.meta) {
+    delete shift.fin.meta[col.id];
+    if (!Object.keys(shift.fin.meta).length) delete shift.fin.meta;
+  }
+
+  if (col.calc) inp.classList.toggle('is-auto', !val);
   const row = inp.closest('[data-fin-row]');
   if (row) refreshFinAutoFields(row);
   const scope = inp.closest('[data-fin-scope]');
   if (scope) refreshFinTotals(scope);
+
+  /* Метка «изменено менеджером» появляется сразу, без перерисовки. */
+  const td = inp.closest('td');
+  if (td) {
+    let mark = td.querySelector('.fin-mark');
+    const meta = shift.fin && shift.fin.meta ? shift.fin.meta[col.id] : null;
+    if (meta) {
+      if (!mark) {
+        mark = document.createElement('span');
+        mark.className = 'fin-mark';
+        mark.textContent = 'M';
+        td.appendChild(mark);
+      }
+      mark.title = 'Изменено менеджером: ' + (meta.by || '') + ' · ' + fmtDateTime(meta.at);
+    } else if (mark) {
+      mark.remove();
+    }
+  }
+
   queueFinWrite(shiftId);
 });
 
@@ -2238,7 +3047,27 @@ document.addEventListener('change', (e) => {
   clearTimeout(finWriteTimers[shiftId]);
   persist();
   const shift = state.team && state.team.shifts ? state.team.shifts[shiftId] : null;
-  if (shift) remoteSet('shifts/' + shiftId, shift);
+  if (shift) remoteSet('fin/' + shiftId, shift.fin || null);
+});
+
+/* Смена команды и роли участников — из настроек. */
+document.addEventListener('change', (e) => {
+  const teamSel = e.target.closest('[data-team-switch]');
+  if (teamSel) {
+    closeSheet();
+    switchTeam(teamSel.value);
+    return;
+  }
+  const roleSel = e.target.closest('[data-member-role]');
+  if (roleSel) {
+    setMemberRole(roleSel.dataset.memberRole, roleSel.value);
+    return;
+  }
+  const empSel = e.target.closest('[data-member-emp]');
+  if (empSel) {
+    setMemberEmp(empSel.dataset.memberEmp, empSel.value);
+    return;
+  }
 });
 
 /* Пока человек печатает в таблице, не перерисовываем экран —
@@ -2249,7 +3078,7 @@ document.addEventListener('focusout', () => {
   }, 0);
 });
 
-document.addEventListener('submit', (e) => {
+document.addEventListener('submit', async (e) => {
   const form = e.target.closest('form[data-form]');
   if (!form) return;
   e.preventDefault();
@@ -2259,6 +3088,9 @@ document.addEventListener('submit', (e) => {
     else if (kind === 'employee') saveEmployeeFromForm(form);
     else if (kind === 'settings') saveSettingsFromForm(form);
     else if (kind === 'finance-cols') saveFinanceFromForm(form);
+    else if (kind === 'auth-login' || kind === 'auth-register' || kind === 'auth-reset') await handleAuthSubmit(kind, form);
+    else if (kind === 'join-lookup') await handleJoinLookup(form);
+    else if (kind === 'join-team') await confirmJoin();
     else if (kind === 'welcome') {
       const fd = new FormData(form);
       const name = String(fd.get('name') || '').trim();
@@ -2316,22 +3148,17 @@ function boot() {
   const cached = LS.get(teamKey(), null);
   if (cached) state.team = normalizeTeam(cached);
 
-  const remoteMode = !!(state.settings.firebase && state.settings.teamCode);
-  if (!state.team && !remoteMode) {
-    state.team = seedTeam();
-    persist();
-  }
-
-  render();
-
-  if (!state.settings.name) {
-    openWelcome();
-  }
-
-  if (remoteMode) {
-    connectFirebase();
+  if (state.settings.firebase) {
+    render();
+    initCloud();
   } else {
+    if (!state.team) {
+      state.team = seedTeam();
+      persist();
+    }
+    render();
     setSync('local');
+    if (!state.settings.name) openWelcome();
   }
 
   if (window.matchMedia) {

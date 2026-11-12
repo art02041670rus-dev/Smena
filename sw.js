@@ -1,5 +1,5 @@
 /* Service worker: офлайн-режим и установка на телефон */
-const CACHE = 'smena-shell-v7';
+const CACHE = 'smena-shell-v10';
 const ASSETS = [
   './',
   './index.html',
@@ -17,6 +17,7 @@ const ASSETS = [
    и могло сохранять изменения в локальную очередь Firebase. */
 const CDN = [
   'https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js',
   'https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js',
 ];
 
